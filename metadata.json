@@ -1,0 +1,6 @@
+{
+  "name": "Nova Trust Bank",
+  "description": "Full-stack digital banking platform featuring Owner & Customer dashboards, internal transfers with OTP, real-time customer support chat, transaction history, PDF statements, and security audit logs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
