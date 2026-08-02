@@ -17,7 +17,9 @@ import {
   Settings,
   Menu,
   X,
-  ChevronRight
+  ChevronRight,
+  Sun,
+  Moon
 } from 'lucide-react';
 
 interface AppLayoutProps {
@@ -42,7 +44,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
   onOpenSupport,
   children
 }) => {
-  const { user, account, logout, unreadNotifications } = useAuth();
+  const { user, account, logout, unreadNotifications, theme, toggleTheme } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   // Get user initials for avatar
@@ -105,7 +107,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
   };
 
   return (
-    <div className="min-h-screen bg-[#0A0D12] flex flex-col md:flex-row text-[#F1F5F9] font-sans">
+    <div className="min-h-screen bg-[#0A0D12] flex flex-col md:flex-row text-[#F1F5F9] font-sans max-w-full overflow-x-hidden">
       
       {/* Sidebar Navigation for Desktop */}
       <aside className="hidden md:flex flex-col w-64 lg:w-72 bg-[#12161F] text-white min-h-screen flex-shrink-0 shadow-2xl sticky top-0 h-screen z-30 border-r border-[#2A3241]">
@@ -224,23 +226,42 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
       )}
 
       {/* Main Workspace Container */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 max-w-full">
         
         {/* Top Header Bar */}
-        <header className="bg-[#12161F] border-b border-[#2A3241] h-16 sm:h-18 px-4 sm:px-8 flex items-center justify-between sticky top-0 z-20 shadow-lg">
+        <header className="bg-[#12161F] border-b border-[#2A3241] h-16 sm:h-18 px-3 sm:px-6 lg:px-8 flex items-center justify-between sticky top-0 z-20 shadow-lg min-w-0">
           
-          <div>
-            <h1 className="text-lg sm:text-xl font-extrabold text-[#F1F5F9] tracking-tight font-sans">
+          <div className="min-w-0 flex-1 mr-2">
+            <h1 className="text-base sm:text-xl font-extrabold text-[#F1F5F9] tracking-tight font-sans truncate">
               {getPageTitle()}
             </h1>
-            <p className="text-[11px] text-[#94A3B8] hidden sm:block font-mono">
+            <p className="text-[11px] text-[#94A3B8] hidden sm:block font-mono truncate">
               Nova Trust Bank • Private Wealth &amp; Commercial Banking Portal
             </p>
           </div>
 
           {user && (
-            <div className="flex items-center gap-3 sm:gap-4">
+            <div className="flex items-center gap-2 sm:gap-4 shrink-0">
               
+              {/* Theme Toggle Button */}
+              <button
+                onClick={toggleTheme}
+                className="p-2 text-gray-200 hover:bg-[#1A2232] rounded-xl transition-colors flex items-center gap-1.5 text-xs font-bold border border-[#2A3241]"
+                title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+              >
+                {theme === 'dark' ? (
+                  <>
+                    <Sun className="w-4 h-4 text-[#D4AF37]" />
+                    <span className="hidden md:inline">Light</span>
+                  </>
+                ) : (
+                  <>
+                    <Moon className="w-4 h-4 text-[#D4AF37]" />
+                    <span className="hidden md:inline">Dark</span>
+                  </>
+                )}
+              </button>
+
               {/* Customer Notifications Quick Action */}
               {user.role === 'CUSTOMER' && (
                 <button
@@ -318,7 +339,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
         </header>
 
         {/* Page Content Body */}
-        <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-y-auto">
+        <main className="flex-1 p-3 sm:p-6 lg:p-8 overflow-y-auto max-w-full min-w-0">
           {children}
         </main>
 

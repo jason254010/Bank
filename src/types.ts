@@ -10,6 +10,17 @@ export type TransactionType = 'Transfer Sent' | 'Transfer Received' | 'Credit Ad
 
 export type NotificationType = 'MONEY_RECEIVED' | 'MONEY_SENT' | 'PASSWORD_CHANGED' | 'ACCOUNT_FROZEN' | 'ACCOUNT_UNFROZEN' | 'ACCOUNT_SUSPENDED' | 'ACCOUNT_REACTIVATED' | 'LOGIN_DETECTED' | 'SUPPORT_MESSAGE' | 'SYSTEM_ALERT';
 
+export interface BankSettings {
+  whatsappNumber: string;
+  telegramUsername: string;
+  supportEmail: string;
+  supportPhone: string;
+  officeAddress?: string;
+  businessHours?: string;
+  homepageVideoUrl?: string;
+  homepageVideoFilename?: string;
+}
+
 export interface User {
   id: string;
   customerId?: string; // Unique Customer ID e.g. CID-849201
@@ -112,6 +123,9 @@ export interface SupportConversation {
   customerEmail: string;
   customerAccountNumber: string;
   status: 'Open' | 'Resolved' | 'Archived';
+  mode?: 'INITIAL' | 'SELECT_MODE' | 'AI_ASSISTANT' | 'HUMAN_VERIFICATION' | 'HUMAN_SUPPORT';
+  verifiedForHuman?: boolean;
+  channel?: 'IN_APP' | 'WHATSAPP' | 'TELEGRAM';
   isPinned?: boolean;
   unreadByOwner?: boolean;
   unreadByCustomer?: boolean;

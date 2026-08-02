@@ -5,6 +5,7 @@ import { Header } from './components/common/Header';
 import { BrandLogo } from './components/common/BrandLogo';
 import { AppLayout } from './components/common/AppLayout';
 import { SupportWidget } from './components/common/SupportWidget';
+import { FloatingContactButtons } from './components/common/FloatingContactButtons';
 import { OwnerSetup } from './components/auth/OwnerSetup';
 import { OwnerLogin } from './components/auth/OwnerLogin';
 import { CustomerLogin } from './components/auth/CustomerLogin';
@@ -192,6 +193,9 @@ const AppContent: React.FC = () => {
           <span className="hidden md:inline pr-1">Customer Support</span>
         </button>
       </div>
+
+      {/* Floating WhatsApp & Telegram Contact Buttons */}
+      <FloatingContactButtons />
 
       {/* Real-time Customer Support Drawer */}
       <SupportWidget isOpen={isSupportOpen} onClose={() => setIsSupportOpen(false)} />

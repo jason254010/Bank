@@ -48,6 +48,8 @@ import {
   Trash2,
   Archive,
   Eye,
+  Film,
+  Upload,
   Ban,
   Calendar,
   MapPin,
@@ -70,15 +72,131 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
   activeTab: propActiveTab,
   setActiveTab: propSetActiveTab
 }) => {
-  const { user, showToast } = useAuth();
-  const [internalActiveTab, setInternalActiveTab] = useState<'home' | 'customers' | 'transactions' | 'support' | 'codes' | 'audit' | 'settings'>('home');
+  const { user, showToast, settings, updateSettings } = useAuth();
+  const [internalActiveTab, setInternalActiveTab] = useState<'home' | 'customers' | 'transactions' | 'support' | 'codes' | 'audit' | 'settings' | 'media'>('home');
 
-  const activeTab = (propActiveTab || internalActiveTab) as 'home' | 'customers' | 'transactions' | 'support' | 'codes' | 'audit' | 'settings';
+  const activeTab = (propActiveTab || internalActiveTab) as 'home' | 'customers' | 'transactions' | 'support' | 'codes' | 'audit' | 'settings' | 'media';
   const setActiveTab = (tab: any) => {
     if (propSetActiveTab) {
       propSetActiveTab(tab);
     } else {
       setInternalActiveTab(tab);
+    }
+  };
+
+  // Bank Settings & Homepage Video State
+  const [settingsForm, setSettingsForm] = useState({
+    whatsappNumber: '',
+    telegramUsername: '',
+    supportEmail: '',
+    supportPhone: '',
+    officeAddress: '',
+    businessHours: ''
+  });
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const ownerFileInputRef = React.useRef<HTMLInputElement>(null);
+
+  // Homepage Video Media Management State
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [videoPreviewUrl, setVideoPreviewUrl] = useState<string>('');
+  const [videoFilename, setVideoFilename] = useState<string>('');
+  const [isUploadingVideo, setIsUploadingVideo] = useState(false);
+  const videoInputRef = React.useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (settings) {
+      setSettingsForm({
+        whatsappNumber: settings.whatsappNumber || '',
+        telegramUsername: settings.telegramUsername || '',
+        supportEmail: settings.supportEmail || '',
+        supportPhone: settings.supportPhone || '',
+        officeAddress: settings.officeAddress || '100 Financial Plaza, Suite 2800, New York, NY 10005',
+        businessHours: settings.businessHours || '24/7 Digital Banking & Support'
+      });
+      setVideoPreviewUrl(settings.homepageVideoUrl || '');
+      setVideoFilename(settings.homepageVideoFilename || '');
+    }
+  }, [settings]);
+
+  const handleVideoFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const validTypes = ['video/mp4', 'video/quicktime', 'video/webm'];
+    const isExtensionValid = Boolean(file.name.match(/\.(mp4|mov|webm)$/i));
+    if (!validTypes.includes(file.type) && !isExtensionValid) {
+      showToast('Please upload a valid MP4, MOV, or WEBM video format.', 'error');
+      return;
+    }
+
+    if (file.size > 35 * 1024 * 1024) {
+      showToast('Video file size exceeds 35MB limit. Please select a compressed MP4 or WEBM video file.', 'error');
+      return;
+    }
+
+    setVideoFile(file);
+    setVideoFilename(file.name);
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      setVideoPreviewUrl(reader.result as string);
+      showToast(`Video "${file.name}" loaded into preview player. Click "Save & Publish Video" to apply.`, 'info');
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSaveVideo = async () => {
+    setIsUploadingVideo(true);
+    try {
+      await updateSettings({
+        ...settingsForm,
+        homepageVideoUrl: videoPreviewUrl,
+        homepageVideoFilename: videoFilename || 'homepage_promo.mp4'
+      });
+      showToast('Homepage Promotional Video published successfully! Public homepage has been updated live.', 'success');
+    } catch (err: any) {
+      showToast(err.message || 'Failed to publish homepage video', 'error');
+    } finally {
+      setIsUploadingVideo(false);
+    }
+  };
+
+  const handleDeleteVideo = async () => {
+    if (!confirm('Are you sure you want to delete the homepage promotional video? The public homepage will automatically revert to the institutional default video placeholder.')) {
+      return;
+    }
+    setIsUploadingVideo(true);
+    try {
+      setVideoPreviewUrl('');
+      setVideoFilename('');
+      setVideoFile(null);
+      await updateSettings({
+        ...settingsForm,
+        homepageVideoUrl: '',
+        homepageVideoFilename: ''
+      });
+      showToast('Homepage promotional video deleted. Reverted to standard corporate media player.', 'info');
+    } catch (err: any) {
+      showToast(err.message || 'Failed to delete video', 'error');
+    } finally {
+      setIsUploadingVideo(false);
+    }
+  };
+
+  const handleSaveSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingSettings(true);
+    try {
+      await updateSettings({
+        ...settingsForm,
+        homepageVideoUrl: videoPreviewUrl,
+        homepageVideoFilename: videoFilename
+      });
+      showToast('Bank Contact Parameters & Communication Settings updated successfully!', 'success');
+    } catch (err: any) {
+      showToast(err.message || 'Failed to update bank settings', 'error');
+    } finally {
+      setIsSavingSettings(false);
     }
   };
 
@@ -367,7 +485,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
       const res = await apiRequest<any>(`/api/admin/customers/${customerId}/send-verification-code`, {
         method: 'POST'
       });
-      alert(`Security Verification Code Generated for ${res.customerName}:\n\nPrimary OTP Code: ${res.primaryOtp}\nSecondary Transfer Passcode: ${res.secondaryCode}\n\nCodes have also been logged to customer alerts.`);
+      showToast(`Verification codes generated for ${res.customerName}: Code 1 (${res.primaryOtp}), Code 2 (${res.secondaryCode})`, 'success');
       loadData();
     } catch (err: any) {
       showToast(err.message || 'Failed to generate verification code', 'error');
@@ -647,6 +765,71 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
     }
   };
 
+  // Real-time Support Polling (Every 2.5s)
+  useEffect(() => {
+    if (activeTab !== 'support') return;
+    const interval = setInterval(async () => {
+      try {
+        const convs = await apiRequest<SupportConversation[]>('/api/support/conversations');
+        setConversations(convs);
+        if (selectedConv) {
+          const msgs = await apiRequest<SupportMessage[]>(`/api/support/conversations/${selectedConv.id}/messages`);
+          setConvMessages(msgs);
+        }
+      } catch (e) {
+        // Ignore background polling errors
+      }
+    }, 2500);
+    return () => clearInterval(interval);
+  }, [activeTab, selectedConv]);
+
+  // Handle File Upload from Owner Side
+  const handleOwnerFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'application/pdf'];
+    const allowedExts = ['.jpg', '.jpeg', '.png', '.webp', '.pdf'];
+
+    Array.from(files).forEach((file: File) => {
+      const ext = '.' + file.name.split('.').pop()?.toLowerCase();
+      const isValid = allowedTypes.includes(file.type) || allowedExts.includes(ext);
+
+      if (!isValid) {
+        showToast(`File ${file.name} is not a supported format (JPG, JPEG, PNG, WEBP, PDF)`, 'error');
+        return;
+      }
+
+      if (file.size > 8 * 1024 * 1024) {
+        showToast(`File ${file.name} exceeds 8MB size limit`, 'error');
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
+        setReplyAttachments(prev => [
+          ...prev,
+          {
+            id: 'att_' + Math.random().toString(36).substring(2),
+            name: file.name,
+            type: file.type || (ext === '.pdf' ? 'application/pdf' : 'image/jpeg'),
+            url: dataUrl,
+            size: file.size
+          }
+        ]);
+        showToast(`Attached ${file.name}`, 'info');
+      };
+      reader.readAsDataURL(file);
+    });
+
+    if (e.target) e.target.value = '';
+  };
+
+  const removeOwnerAttachment = (id: string) => {
+    setReplyAttachments(prev => prev.filter(a => a.id !== id));
+  };
+
   // Owner Send Support Reply
   const handleSendOwnerReply = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -745,10 +928,10 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
 
         {/* Admin Navigation Tabs */}
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 border-t border-white/10">
-          <nav className="flex space-x-2 sm:space-x-6 overflow-x-auto py-2 text-xs font-medium">
+          <nav className="flex space-x-2 sm:space-x-6 overflow-x-auto py-2 text-xs font-semibold scrollbar-none flex-nowrap min-w-0 max-w-full">
             <button
               onClick={() => setActiveTab('home')}
-              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 ${
+              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 shrink-0 whitespace-nowrap ${
                 activeTab === 'home' ? 'bg-[#0057B8] text-white' : 'text-[#A9D8F7] hover:bg-white/5'
               }`}
             >
@@ -758,7 +941,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
 
             <button
               onClick={() => setActiveTab('customers')}
-              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 ${
+              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 shrink-0 whitespace-nowrap ${
                 activeTab === 'customers' ? 'bg-[#0057B8] text-white' : 'text-[#A9D8F7] hover:bg-white/5'
               }`}
             >
@@ -768,7 +951,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
 
             <button
               onClick={() => setActiveTab('transactions')}
-              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 ${
+              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 shrink-0 whitespace-nowrap ${
                 activeTab === 'transactions' ? 'bg-[#0057B8] text-white' : 'text-[#A9D8F7] hover:bg-white/5'
               }`}
             >
@@ -778,7 +961,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
 
             <button
               onClick={() => setActiveTab('support')}
-              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 ${
+              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 shrink-0 whitespace-nowrap ${
                 activeTab === 'support' ? 'bg-[#0057B8] text-white' : 'text-[#A9D8F7] hover:bg-white/5'
               }`}
             >
@@ -788,7 +971,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
 
             <button
               onClick={() => setActiveTab('codes')}
-              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 ${
+              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 shrink-0 whitespace-nowrap ${
                 activeTab === 'codes' ? 'bg-[#0057B8] text-white' : 'text-[#A9D8F7] hover:bg-white/5'
               }`}
             >
@@ -798,7 +981,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
 
             <button
               onClick={() => setActiveTab('audit')}
-              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 ${
+              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 shrink-0 whitespace-nowrap ${
                 activeTab === 'audit' ? 'bg-[#0057B8] text-white' : 'text-[#A9D8F7] hover:bg-white/5'
               }`}
             >
@@ -808,19 +991,29 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
 
             <button
               onClick={() => setActiveTab('settings')}
-              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 ${
+              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 shrink-0 whitespace-nowrap ${
                 activeTab === 'settings' ? 'bg-[#0057B8] text-white' : 'text-[#A9D8F7] hover:bg-white/5'
               }`}
             >
               <Settings className="w-3.5 h-3.5" />
               <span>Bank Settings</span>
             </button>
+
+            <button
+              onClick={() => setActiveTab('media')}
+              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 shrink-0 whitespace-nowrap ${
+                activeTab === 'media' ? 'bg-[#0057B8] text-white' : 'text-[#A9D8F7] hover:bg-white/5'
+              }`}
+            >
+              <Film className="w-3.5 h-3.5 text-[#D4AF37]" />
+              <span>Homepage Media</span>
+            </button>
           </nav>
         </div>
       </div>
 
       {/* Main Admin Content Area */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-6">
+      <main className="max-w-7xl mx-auto px-2 sm:px-6 lg:px-8 mt-4 sm:mt-6 max-w-full min-w-0">
         
         {/* ==================== TAB 1: DASHBOARD HOME ==================== */}
         {activeTab === 'home' && (
@@ -828,10 +1021,10 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
             
             {/* Key Metric Cards */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="bg-white p-5 rounded-2xl border border-[#D9DEE5] shadow-xs flex items-center justify-between">
-                <div>
+              <div className="bg-white p-5 rounded-2xl border border-[#D9DEE5] shadow-xs flex items-center justify-between min-w-0">
+                <div className="min-w-0 flex-1 pr-2">
                   <p className="text-xs font-semibold text-[#6E7A87] uppercase tracking-wider">Total Bank Deposits</p>
-                  <p className="text-2xl font-bold font-mono text-[#0F3557] mt-1">
+                  <p className="text-xl sm:text-2xl font-bold font-mono text-[#0F3557] mt-1 break-all">
                     ${totalDeposits.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </p>
                 </div>
@@ -981,9 +1174,9 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
 
             {/* Customer Accounts Table */}
             <div className="bg-white rounded-2xl border border-[#D9DEE5] shadow-xs overflow-hidden">
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto w-full max-w-full">
                 <table className="w-full text-left text-xs">
-                  <thead className="bg-[#0F3557] text-[#A9D8F7] uppercase text-[10px] tracking-wider">
+                  <thead className="bg-[#0F3557] text-[#A9D8F7] uppercase text-[10px] tracking-wider whitespace-nowrap">
                     <tr>
                       <th className="py-3 px-4">Customer Details</th>
                       <th className="py-3 px-4">Customer ID</th>
@@ -996,7 +1189,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                       <th className="py-3 px-4 text-center">Actions & Controls</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-[#D9DEE5]">
+                  <tbody className="divide-y divide-[#D9DEE5] whitespace-nowrap">
                     {filteredCustomers.length === 0 ? (
                       <tr>
                         <td colSpan={9} className="py-8 text-center text-[#6E7A87]">
@@ -1269,10 +1462,10 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
 
         {/* ==================== TAB 4: CUSTOMER SUPPORT CHAT ==================== */}
         {activeTab === 'support' && (
-          <div className="bg-white rounded-2xl border border-[#D9DEE5] shadow-xs overflow-hidden h-[680px] grid grid-cols-1 md:grid-cols-3">
+          <div className="bg-white rounded-2xl border border-[#D9DEE5] shadow-xs overflow-hidden h-[680px] grid grid-cols-1 md:grid-cols-3 max-w-full min-w-0">
             
             {/* Conversations List */}
-            <div className="border-r border-[#D9DEE5] bg-[#F3F5F7] flex flex-col h-full overflow-hidden">
+            <div className={`border-r border-[#D9DEE5] bg-[#F3F5F7] flex flex-col h-full overflow-hidden ${selectedConv ? 'hidden md:flex' : 'flex'}`}>
               <div className="p-4 border-b border-[#D9DEE5] bg-white">
                 <h3 className="font-bold text-sm text-[#0F3557]">Customer Support Inbox</h3>
                 <p className="text-xs text-[#6E7A87]">Real-time customer inquiries & attachments</p>
@@ -1307,16 +1500,35 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
             </div>
 
             {/* Selected Conversation Workspace */}
-            <div className="md:col-span-2 flex flex-col h-full bg-white">
+            <div className={`md:col-span-2 flex-col h-full bg-white ${selectedConv ? 'flex' : 'hidden md:flex'}`}>
               {selectedConv ? (
                 <>
                   {/* Conv Header */}
                   <div className="p-4 border-b border-[#D9DEE5] flex items-center justify-between bg-[#0F3557] text-white">
-                    <div>
-                      <h4 className="font-bold text-sm">{selectedConv.customerName}</h4>
-                      <p className="text-xs text-[#A9D8F7] font-mono">
-                        {selectedConv.customerEmail} • Account #{selectedConv.customerAccountNumber}
-                      </p>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <button
+                        onClick={() => setSelectedConv(null)}
+                        className="md:hidden px-2 py-1 bg-white/10 hover:bg-white/20 text-[#A9D8F7] hover:text-white rounded-lg text-xs font-semibold shrink-0"
+                      >
+                        ← Inbox
+                      </button>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-bold text-sm truncate">{selectedConv.customerName}</h4>
+                          {selectedConv.verifiedForHuman ? (
+                            <span className="bg-emerald-500/20 text-emerald-300 text-[10px] font-bold px-2 py-0.5 rounded border border-emerald-400/30 flex items-center gap-1 shrink-0">
+                              ✓ Identity Verified
+                            </span>
+                          ) : selectedConv.mode === 'AI_ASSISTANT' ? (
+                            <span className="bg-sky-500/20 text-sky-300 text-[10px] font-bold px-2 py-0.5 rounded border border-sky-400/30 shrink-0">
+                              🤖 AI Mode
+                            </span>
+                          ) : null}
+                        </div>
+                        <p className="text-xs text-[#A9D8F7] font-mono truncate">
+                          {selectedConv.customerEmail} • Account #{selectedConv.customerAccountNumber}
+                        </p>
+                      </div>
                     </div>
 
                     <div className="flex items-center gap-2">
@@ -1348,13 +1560,68 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                           <div className={`p-3 rounded-2xl max-w-[80%] text-xs ${isOwner ? 'bg-[#0057B8] text-white' : 'bg-white text-[#1E2A36] border border-[#D9DEE5]'}`}>
                             {msg.text}
                             {msg.attachments && msg.attachments.length > 0 && (
-                              <div className="mt-2 space-y-1 pt-2 border-t border-white/20">
-                                {msg.attachments.map(att => (
-                                  <a key={att.id} href={att.url} download={att.name} className="flex items-center gap-2 text-xs font-mono underline">
-                                    <Download className="w-3.5 h-3.5" />
-                                    <span>{att.name}</span>
-                                  </a>
-                                ))}
+                              <div className="mt-2.5 space-y-2 border-t border-white/20 pt-2">
+                                {msg.attachments.map(att => {
+                                  const isImage = att.type.startsWith('image/') || /\.(jpg|jpeg|png|webp)$/i.test(att.name);
+                                  if (isImage) {
+                                    return (
+                                      <div key={att.id} className="rounded-xl overflow-hidden border border-black/10 bg-black/5 max-w-[260px] shadow-xs">
+                                        <a href={att.url} target="_blank" rel="noopener noreferrer" className="block relative group">
+                                          <img
+                                            src={att.url}
+                                            alt={att.name}
+                                            className="w-full max-h-52 object-cover rounded-t-xl hover:opacity-95 transition-opacity"
+                                          />
+                                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-xs font-semibold gap-1">
+                                            <Eye className="w-4 h-4" />
+                                            <span>View Image</span>
+                                          </div>
+                                        </a>
+                                        <div className={`p-1.5 flex items-center justify-between text-[10px] ${isOwner ? 'bg-black/20 text-white' : 'bg-gray-100 text-[#1E2A36]'}`}>
+                                          <span className="truncate max-w-[150px] font-mono">{att.name}</span>
+                                          <a
+                                            href={att.url}
+                                            download={att.name}
+                                            className="p-1 hover:text-emerald-400 transition-colors flex items-center gap-0.5"
+                                            title="Download Image"
+                                          >
+                                            <Download className="w-3.5 h-3.5" />
+                                          </a>
+                                        </div>
+                                      </div>
+                                    );
+                                  } else {
+                                    return (
+                                      <div
+                                        key={att.id}
+                                        className={`flex items-center justify-between gap-2 p-2.5 rounded-xl border text-xs ${
+                                          isOwner ? 'bg-white/15 border-white/20 text-white' : 'bg-[#F3F5F7] border-[#D9DEE5] text-[#1E2A36]'
+                                        }`}
+                                      >
+                                        <div className="flex items-center gap-2 truncate">
+                                          <div className="p-1.5 bg-rose-500/20 text-rose-500 rounded-lg shrink-0">
+                                            <FileText className="w-4 h-4" />
+                                          </div>
+                                          <div className="truncate">
+                                            <p className="font-semibold text-[11px] font-mono truncate">{att.name}</p>
+                                            <p className="text-[9px] opacity-75 font-mono">{att.size ? (att.size / 1024).toFixed(0) + ' KB' : 'PDF Document'}</p>
+                                          </div>
+                                        </div>
+                                        <a
+                                          href={att.url}
+                                          download={att.name}
+                                          className={`px-2 py-1 rounded-lg text-[10px] font-semibold flex items-center gap-1 transition-colors ${
+                                            isOwner ? 'bg-white/20 hover:bg-white/30 text-white' : 'bg-[#0057B8] text-white hover:bg-[#004bb0]'
+                                          }`}
+                                          title="Download PDF"
+                                        >
+                                          <Download className="w-3.5 h-3.5" />
+                                          <span>Download</span>
+                                        </a>
+                                      </div>
+                                    );
+                                  }
+                                })}
                               </div>
                             )}
                           </div>
@@ -1363,8 +1630,50 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                     })}
                   </div>
 
+                  {/* Pending Owner Attachments */}
+                  {replyAttachments.length > 0 && (
+                    <div className="px-3 py-2 bg-[#F8FAFC] border-t border-[#D9DEE5] flex flex-wrap gap-2">
+                      {replyAttachments.map(att => {
+                        const isImage = att.type.startsWith('image/') || /\.(jpg|jpeg|png|webp)$/i.test(att.name);
+                        return (
+                          <div key={att.id} className="flex items-center gap-2 bg-white border border-[#D9DEE5] px-2.5 py-1.5 rounded-xl text-xs shadow-xs">
+                            {isImage ? (
+                              <img src={att.url} alt={att.name} className="w-5 h-5 rounded object-cover border border-gray-200" />
+                            ) : (
+                              <FileText className="w-4 h-4 text-rose-500 shrink-0" />
+                            )}
+                            <span className="truncate max-w-[120px] font-mono text-[10px] font-semibold">{att.name}</span>
+                            <button
+                              type="button"
+                              onClick={() => removeOwnerAttachment(att.id)}
+                              className="p-1 hover:bg-rose-50 text-rose-600 rounded"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
                   {/* Reply Input */}
-                  <form onSubmit={handleSendOwnerReply} className="p-3 border-t border-[#D9DEE5] flex gap-2">
+                  <form onSubmit={handleSendOwnerReply} className="p-3 border-t border-[#D9DEE5] flex items-center gap-2">
+                    <input
+                      type="file"
+                      ref={ownerFileInputRef}
+                      onChange={handleOwnerFileUpload}
+                      className="hidden"
+                      accept="image/jpeg,image/jpg,image/png,image/webp,application/pdf"
+                      multiple
+                    />
+                    <button
+                      type="button"
+                      onClick={() => ownerFileInputRef.current?.click()}
+                      className="p-2.5 text-gray-500 hover:text-[#0057B8] hover:bg-gray-100 rounded-xl transition-colors"
+                      title="Attach JPG, PNG, WEBP or PDF"
+                    >
+                      <Paperclip className="w-4 h-4" />
+                    </button>
                     <input
                       type="text"
                       value={replyText}
@@ -1372,7 +1681,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                       placeholder="Type official bank support response..."
                       className="flex-1 bg-white text-black caret-black text-xs px-3.5 py-2.5 rounded-xl border border-gray-300 focus:outline-none focus:border-[#0057B8] focus:ring-2 focus:ring-[#0057B8]/20 placeholder:text-gray-500 font-sans shadow-xs"
                     />
-                    <button type="submit" className="bg-[#0057B8] text-white px-4 py-2 rounded-xl text-xs font-semibold flex items-center gap-1">
+                    <button type="submit" className="bg-[#0057B8] hover:bg-[#004bb0] text-white px-4 py-2.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors">
                       <Send className="w-3.5 h-3.5" />
                       <span>Reply</span>
                     </button>
@@ -1590,31 +1899,366 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
 
         {/* ==================== TAB 6: SETTINGS ==================== */}
         {activeTab === 'settings' && (
-          <div className="bg-white rounded-2xl border border-[#D9DEE5] shadow-xs p-6 max-w-2xl space-y-4">
-            <h3 className="text-base font-bold text-[#0F3557]">Nova Trust Bank Institutional Parameters</h3>
-            <div className="space-y-3 text-xs">
-              <div className="p-3 bg-[#F3F5F7] rounded-xl border border-[#D9DEE5] flex justify-between items-center">
+          <div className="space-y-6 max-w-4xl">
+            {/* Hidden Video File Input */}
+            <input
+              type="file"
+              ref={videoInputRef}
+              onChange={handleVideoFileChange}
+              accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm"
+              className="hidden"
+            />
+
+            {/* Homepage Media Management Panel */}
+            <div className="bg-white rounded-2xl border border-[#D9DEE5] shadow-xs p-6 space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-gray-100 pb-4 gap-3">
                 <div>
-                  <p className="font-semibold text-[#1E2A36]">Bank Routing Number</p>
-                  <p className="text-[#6E7A87] font-mono">021000021 (Federal Reserve Routing System)</p>
+                  <div className="flex items-center gap-2">
+                    <Film className="w-5 h-5 text-[#0057B8]" />
+                    <h3 className="text-base font-bold text-[#0F3557]">Homepage Media & Promotional Video Management</h3>
+                  </div>
+                  <p className="text-xs text-[#6E7A87] mt-1">
+                    Manage the promotional video displayed on the public homepage. Upload, replace, preview, or remove video. Supported formats: MP4, MOV, WEBM.
+                  </p>
                 </div>
-                <span className="bg-emerald-100 text-emerald-800 font-bold px-2 py-1 rounded text-[10px]">VERIFIED</span>
+                
+                <div className="shrink-0">
+                  {videoPreviewUrl ? (
+                    <span className="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-800 border border-emerald-300 text-xs font-bold px-3 py-1 rounded-full">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                      Custom Video Active ({videoFilename || 'Uploaded Video'})
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 bg-amber-50 text-amber-900 border border-amber-300 text-xs font-semibold px-3 py-1 rounded-full">
+                      <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                      Default Media Placeholder Active
+                    </span>
+                  )}
+                </div>
               </div>
 
-              <div className="p-3 bg-[#F3F5F7] rounded-xl border border-[#D9DEE5] flex justify-between items-center">
-                <div>
-                  <p className="font-semibold text-[#1E2A36]">Internal Transfer Engine</p>
-                  <p className="text-[#6E7A87]">OTP Email Authentication Enabled ($0.00 Transaction Fee)</p>
+              {/* Video Player & Preview Container */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-xs font-bold text-[#0F3557]">
+                  <span className="flex items-center gap-1.5">
+                    <Eye className="w-4 h-4 text-[#0057B8]" />
+                    Homepage Promotional Video Preview
+                  </span>
+                  <span className="text-[11px] font-mono text-gray-500 font-normal">Formats: MP4, MOV, WEBM (Max 35MB)</span>
                 </div>
-                <span className="bg-blue-100 text-[#0057B8] font-bold px-2 py-1 rounded text-[10px]">ACTIVE</span>
+
+                <div className="bg-[#0A0D12] rounded-2xl overflow-hidden border border-[#2A3241] aspect-video relative flex items-center justify-center group shadow-md">
+                  {videoPreviewUrl ? (
+                    <video
+                      src={videoPreviewUrl}
+                      controls
+                      playsInline
+                      className="w-full h-full object-contain rounded-2xl"
+                    />
+                  ) : (
+                    <div className="text-center p-6 space-y-3">
+                      <div className="w-16 h-16 rounded-full bg-white/5 border border-white/10 flex items-center justify-center mx-auto text-[#D4AF37]">
+                        <Film className="w-8 h-8" />
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-bold text-white">Default Corporate Overview Video</h4>
+                        <p className="text-xs text-gray-400 mt-1 max-w-sm mx-auto">
+                          No custom video has been saved. The public homepage displays the standard Nova Trust institutional media overview.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
 
-              <div className="p-3 bg-[#F3F5F7] rounded-xl border border-[#D9DEE5] flex justify-between items-center">
-                <div>
-                  <p className="font-semibold text-[#1E2A36]">Security Enforcement</p>
-                  <p className="text-[#6E7A87]">256-Bit SSL Encryption • Audit Logs Enabled</p>
+              {/* Control Buttons */}
+              <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-gray-100">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => videoInputRef.current?.click()}
+                    disabled={isUploadingVideo}
+                    className="bg-[#0057B8] hover:bg-[#004bb0] text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow-xs transition-all flex items-center gap-2 active:scale-95 disabled:opacity-50"
+                  >
+                    <Upload className="w-4 h-4" />
+                    <span>{videoPreviewUrl ? 'Replace Video' : 'Upload New Video'}</span>
+                  </button>
+
+                  {videoPreviewUrl && (
+                    <button
+                      type="button"
+                      onClick={handleDeleteVideo}
+                      disabled={isUploadingVideo}
+                      className="bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs font-bold px-4 py-2.5 rounded-xl transition-all flex items-center gap-2 active:scale-95 disabled:opacity-50"
+                    >
+                      <Trash2 className="w-4 h-4 text-red-600" />
+                      <span>Delete Video</span>
+                    </button>
+                  )}
                 </div>
-                <span className="bg-emerald-100 text-emerald-800 font-bold px-2 py-1 rounded text-[10px]">ACTIVE</span>
+
+                <button
+                  type="button"
+                  onClick={handleSaveVideo}
+                  disabled={isUploadingVideo}
+                  className="bg-gradient-to-r from-[#D4AF37] to-[#B89228] hover:from-[#E5C158] hover:to-[#CBA532] text-[#0A0D12] text-xs font-extrabold px-6 py-2.5 rounded-xl shadow-md transition-all flex items-center gap-2 active:scale-95 disabled:opacity-50"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>{isUploadingVideo ? 'Publishing Changes...' : 'Save & Publish Video'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Customer Communication & Contact Channels */}
+            <form onSubmit={handleSaveSettings} className="bg-white rounded-2xl border border-[#D9DEE5] shadow-xs p-6 space-y-5">
+              <div className="flex items-center justify-between border-b border-gray-100 pb-4">
+                <div>
+                  <h3 className="text-base font-bold text-[#0F3557]">Customer Support & Live Floating Channels</h3>
+                  <p className="text-xs text-[#6E7A87]">Configure official WhatsApp and Telegram links visible across the platform.</p>
+                </div>
+                <span className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2.5 py-1 rounded-full uppercase">
+                  Live Global Controls
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                {/* WhatsApp Phone Number */}
+                <div className="space-y-1.5">
+                  <label className="block font-semibold text-[#1E2A36]">
+                    WhatsApp Support Number <span className="text-emerald-600 font-mono">*</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={settingsForm.whatsappNumber}
+                      onChange={e => setSettingsForm({ ...settingsForm, whatsappNumber: e.target.value })}
+                      placeholder="+1 (800) 555-0199"
+                      className="w-full bg-white text-black caret-black px-3.5 py-2.5 rounded-xl border border-gray-300 focus:outline-none focus:border-[#0057B8] focus:ring-2 focus:ring-[#0057B8]/20 font-mono shadow-xs"
+                      required
+                    />
+                  </div>
+                  <p className="text-[10px] text-[#6E7A87]">Include country code (e.g., +18005550199 or +447123456789)</p>
+                </div>
+
+                {/* Telegram Username */}
+                <div className="space-y-1.5">
+                  <label className="block font-semibold text-[#1E2A36]">
+                    Telegram Support Handle or Link <span className="text-sky-600 font-mono">*</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={settingsForm.telegramUsername}
+                      onChange={e => setSettingsForm({ ...settingsForm, telegramUsername: e.target.value })}
+                      placeholder="@NovaTrustSupport or NovaTrustSupport"
+                      className="w-full bg-white text-black caret-black px-3.5 py-2.5 rounded-xl border border-gray-300 focus:outline-none focus:border-[#0057B8] focus:ring-2 focus:ring-[#0057B8]/20 font-mono shadow-xs"
+                      required
+                    />
+                  </div>
+                  <p className="text-[10px] text-[#6E7A87]">Enter Telegram username e.g. @NovaTrustSupport or link https://t.me/NovaTrustSupport</p>
+                </div>
+
+                {/* Support Email */}
+                <div className="space-y-1.5">
+                  <label className="block font-semibold text-[#1E2A36]">Official Support Email</label>
+                  <input
+                    type="email"
+                    value={settingsForm.supportEmail}
+                    onChange={e => setSettingsForm({ ...settingsForm, supportEmail: e.target.value })}
+                    placeholder="support@novatrustbank.com"
+                    className="w-full bg-white text-black caret-black px-3.5 py-2.5 rounded-xl border border-gray-300 focus:outline-none focus:border-[#0057B8] focus:ring-2 focus:ring-[#0057B8]/20 font-sans shadow-xs"
+                  />
+                </div>
+
+                {/* Support Hotline */}
+                <div className="space-y-1.5">
+                  <label className="block font-semibold text-[#1E2A36]">Official Support Hotline</label>
+                  <input
+                    type="text"
+                    value={settingsForm.supportPhone}
+                    onChange={e => setSettingsForm({ ...settingsForm, supportPhone: e.target.value })}
+                    placeholder="+1 (800) 555-NOVA"
+                    className="w-full bg-white text-black caret-black px-3.5 py-2.5 rounded-xl border border-gray-300 focus:outline-none focus:border-[#0057B8] focus:ring-2 focus:ring-[#0057B8]/20 font-mono shadow-xs"
+                  />
+                </div>
+
+                {/* Headquarters Office Address */}
+                <div className="space-y-1.5">
+                  <label className="block font-semibold text-[#1E2A36]">Headquarters / Contact Address</label>
+                  <input
+                    type="text"
+                    value={settingsForm.officeAddress}
+                    onChange={e => setSettingsForm({ ...settingsForm, officeAddress: e.target.value })}
+                    placeholder="100 Financial Plaza, Suite 2800, New York, NY 10005"
+                    className="w-full bg-white text-black caret-black px-3.5 py-2.5 rounded-xl border border-gray-300 focus:outline-none focus:border-[#0057B8] focus:ring-2 focus:ring-[#0057B8]/20 font-sans shadow-xs"
+                  />
+                </div>
+
+                {/* Business Hours */}
+                <div className="space-y-1.5 md:col-span-2">
+                  <label className="block font-semibold text-[#1E2A36]">Operating Business Hours</label>
+                  <input
+                    type="text"
+                    value={settingsForm.businessHours}
+                    onChange={e => setSettingsForm({ ...settingsForm, businessHours: e.target.value })}
+                    placeholder="24/7 Digital Banking & Priority Support"
+                    className="w-full bg-white text-black caret-black px-3.5 py-2.5 rounded-xl border border-gray-300 focus:outline-none focus:border-[#0057B8] focus:ring-2 focus:ring-[#0057B8]/20 font-sans shadow-xs"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-2 flex justify-end">
+                <button
+                  type="submit"
+                  disabled={isSavingSettings}
+                  className="bg-[#0057B8] hover:bg-[#004bb0] text-white font-semibold text-xs px-5 py-2.5 rounded-xl shadow-md transition-all active:scale-95 disabled:opacity-50"
+                >
+                  {isSavingSettings ? 'Saving Parameters...' : 'Save Communication Settings'}
+                </button>
+              </div>
+            </form>
+
+            {/* Institutional Security Parameters */}
+            <div className="bg-white rounded-2xl border border-[#D9DEE5] shadow-xs p-6 space-y-4">
+              <h3 className="text-base font-bold text-[#0F3557]">Nova Trust Bank Operational Parameters</h3>
+              <div className="space-y-3 text-xs">
+                <div className="p-3.5 bg-[#F3F5F7] rounded-xl border border-[#D9DEE5] flex justify-between items-center">
+                  <div>
+                    <p className="font-semibold text-[#1E2A36]">Bank Routing Number</p>
+                    <p className="text-[#6E7A87] font-mono">021000021 (Federal Reserve Routing System)</p>
+                  </div>
+                  <span className="bg-emerald-100 text-emerald-800 font-bold px-2.5 py-1 rounded-full text-[10px]">VERIFIED</span>
+                </div>
+
+                <div className="p-3.5 bg-[#F3F5F7] rounded-xl border border-[#D9DEE5] flex justify-between items-center">
+                  <div>
+                    <p className="font-semibold text-[#1E2A36]">Internal Transfer Engine</p>
+                    <p className="text-[#6E7A87]">OTP Email Authentication Enabled ($0.00 Transaction Fee)</p>
+                  </div>
+                  <span className="bg-blue-100 text-[#0057B8] font-bold px-2.5 py-1 rounded-full text-[10px]">ACTIVE</span>
+                </div>
+
+                <div className="p-3.5 bg-[#F3F5F7] rounded-xl border border-[#D9DEE5] flex justify-between items-center">
+                  <div>
+                    <p className="font-semibold text-[#1E2A36]">Security Enforcement</p>
+                    <p className="text-[#6E7A87]">256-Bit SSL Encryption • Audit Logs Enabled</p>
+                  </div>
+                  <span className="bg-emerald-100 text-emerald-800 font-bold px-2.5 py-1 rounded-full text-[10px]">ACTIVE</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ==================== TAB 7: HOMEPAGE MEDIA MANAGEMENT ==================== */}
+        {activeTab === 'media' && (
+          <div className="space-y-6 max-w-4xl">
+            {/* Hidden Video File Input */}
+            <input
+              type="file"
+              ref={videoInputRef}
+              onChange={handleVideoFileChange}
+              accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm"
+              className="hidden"
+            />
+
+            {/* Homepage Media Management Panel */}
+            <div className="bg-white rounded-2xl border border-[#D9DEE5] shadow-xs p-6 space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-gray-100 pb-4 gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Film className="w-5 h-5 text-[#0057B8]" />
+                    <h3 className="text-base font-bold text-[#0F3557]">Homepage Media & Promotional Video Management</h3>
+                  </div>
+                  <p className="text-xs text-[#6E7A87] mt-1">
+                    Manage the promotional video displayed on the public homepage. Upload, replace, preview, or remove video. Supported formats: MP4, MOV, WEBM.
+                  </p>
+                </div>
+                
+                <div className="shrink-0">
+                  {videoPreviewUrl ? (
+                    <span className="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-800 border border-emerald-300 text-xs font-bold px-3 py-1 rounded-full">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                      Custom Video Active ({videoFilename || 'Uploaded Video'})
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 bg-amber-50 text-amber-900 border border-amber-300 text-xs font-semibold px-3 py-1 rounded-full">
+                      <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                      Default Media Placeholder Active
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Video Player & Preview Container */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-xs font-bold text-[#0F3557]">
+                  <span className="flex items-center gap-1.5">
+                    <Eye className="w-4 h-4 text-[#0057B8]" />
+                    Homepage Promotional Video Preview
+                  </span>
+                  <span className="text-[11px] font-mono text-gray-500 font-normal">Formats: MP4, MOV, WEBM (Max 35MB)</span>
+                </div>
+
+                <div className="bg-[#0A0D12] rounded-2xl overflow-hidden border border-[#2A3241] aspect-video relative flex items-center justify-center group shadow-md">
+                  {videoPreviewUrl ? (
+                    <video
+                      src={videoPreviewUrl}
+                      controls
+                      playsInline
+                      className="w-full h-full object-contain rounded-2xl"
+                    />
+                  ) : (
+                    <div className="text-center p-6 space-y-3">
+                      <div className="w-16 h-16 rounded-full bg-white/5 border border-white/10 flex items-center justify-center mx-auto text-[#D4AF37]">
+                        <Film className="w-8 h-8" />
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-bold text-white">Default Corporate Overview Video</h4>
+                        <p className="text-xs text-gray-400 mt-1 max-w-sm mx-auto">
+                          No custom video has been saved. The public homepage displays the standard Nova Trust institutional media overview.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Control Buttons */}
+              <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-gray-100">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => videoInputRef.current?.click()}
+                    disabled={isUploadingVideo}
+                    className="bg-[#0057B8] hover:bg-[#004bb0] text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow-xs transition-all flex items-center gap-2 active:scale-95 disabled:opacity-50"
+                  >
+                    <Upload className="w-4 h-4" />
+                    <span>{videoPreviewUrl ? 'Replace Video' : 'Upload New Video'}</span>
+                  </button>
+
+                  {videoPreviewUrl && (
+                    <button
+                      type="button"
+                      onClick={handleDeleteVideo}
+                      disabled={isUploadingVideo}
+                      className="bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs font-bold px-4 py-2.5 rounded-xl transition-all flex items-center gap-2 active:scale-95 disabled:opacity-50"
+                    >
+                      <Trash2 className="w-4 h-4 text-red-600" />
+                      <span>Delete Video</span>
+                    </button>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleSaveVideo}
+                  disabled={isUploadingVideo}
+                  className="bg-gradient-to-r from-[#D4AF37] to-[#B89228] hover:from-[#E5C158] hover:to-[#CBA532] text-[#0A0D12] text-xs font-extrabold px-6 py-2.5 rounded-xl shadow-md transition-all flex items-center gap-2 active:scale-95 disabled:opacity-50"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>{isUploadingVideo ? 'Publishing Changes...' : 'Save & Publish Video'}</span>
+                </button>
               </div>
             </div>
           </div>

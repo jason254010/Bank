@@ -462,10 +462,10 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
 
         {/* Navigation Tabs */}
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 border-t border-white/10">
-          <nav className="flex space-x-2 sm:space-x-6 overflow-x-auto py-2 text-xs font-medium">
+          <nav className="flex space-x-2 sm:space-x-6 overflow-x-auto py-2 text-xs font-semibold scrollbar-none flex-nowrap min-w-0 max-w-full">
             <button
               onClick={() => setActiveTab('summary')}
-              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 ${
+              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 shrink-0 whitespace-nowrap ${
                 activeTab === 'summary' ? 'bg-[#0057B8] text-white' : 'text-[#A9D8F7] hover:bg-white/5'
               }`}
             >
@@ -475,7 +475,7 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
 
             <button
               onClick={() => setActiveTab('transfer')}
-              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 ${
+              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 shrink-0 whitespace-nowrap ${
                 activeTab === 'transfer' ? 'bg-[#0057B8] text-white' : 'text-[#A9D8F7] hover:bg-white/5'
               }`}
             >
@@ -485,7 +485,7 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
 
             <button
               onClick={() => setActiveTab('history')}
-              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 ${
+              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 shrink-0 whitespace-nowrap ${
                 activeTab === 'history' ? 'bg-[#0057B8] text-white' : 'text-[#A9D8F7] hover:bg-white/5'
               }`}
             >
@@ -495,7 +495,7 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
 
             <button
               onClick={() => setActiveTab('cards')}
-              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 ${
+              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 shrink-0 whitespace-nowrap ${
                 activeTab === 'cards' ? 'bg-[#0057B8] text-white' : 'text-[#A9D8F7] hover:bg-white/5'
               }`}
             >
@@ -505,7 +505,7 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
 
             <button
               onClick={() => setActiveTab('statements')}
-              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 ${
+              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 shrink-0 whitespace-nowrap ${
                 activeTab === 'statements' ? 'bg-[#0057B8] text-white' : 'text-[#A9D8F7] hover:bg-white/5'
               }`}
             >
@@ -515,7 +515,7 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
 
             <button
               onClick={() => setActiveTab('notifications')}
-              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 ${
+              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 shrink-0 whitespace-nowrap ${
                 activeTab === 'notifications' ? 'bg-[#0057B8] text-white' : 'text-[#A9D8F7] hover:bg-white/5'
               }`}
             >
@@ -525,7 +525,7 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
 
             <button
               onClick={() => setActiveTab('profile')}
-              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 ${
+              className={`py-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 shrink-0 whitespace-nowrap ${
                 activeTab === 'profile' ? 'bg-[#0057B8] text-white' : 'text-[#A9D8F7] hover:bg-white/5'
               }`}
             >
@@ -537,7 +537,7 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
       </div>
 
       {/* Main Customer Workspace */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-6">
+      <main className="max-w-7xl mx-auto px-2 sm:px-6 lg:px-8 mt-4 sm:mt-6 max-w-full min-w-0">
         
         {/* Account Notice Alert Banner if not active */}
         {account?.status && account.status !== 'Active' && (
@@ -563,21 +563,21 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               
               {/* Account Balance Card */}
-              <div className="lg:col-span-2 bg-gradient-to-br from-[#0F3557] to-[#0057B8] text-white p-6 rounded-3xl shadow-lg relative overflow-hidden flex flex-col justify-between">
-                <div className="flex justify-between items-start">
-                  <div>
+              <div className="lg:col-span-2 bg-gradient-to-br from-[#0F3557] to-[#0057B8] text-white p-4 sm:p-6 rounded-3xl shadow-lg relative overflow-hidden flex flex-col justify-between min-w-0">
+                <div className="flex justify-between items-start gap-2">
+                  <div className="min-w-0 flex-1">
                     <span className="text-xs text-[#A9D8F7] font-semibold tracking-wider uppercase">
                       {account?.accountType || 'Checking'} Account
                     </span>
-                    <h2 className="text-3xl sm:text-4xl font-extrabold font-mono mt-1 text-white">
+                    <h2 className="text-2xl sm:text-4xl font-extrabold font-mono mt-1 text-white break-all min-w-0">
                       ${account?.availableBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                     </h2>
-                    <p className="text-xs text-[#A9D8F7] mt-1 font-mono">
+                    <p className="text-xs text-[#A9D8F7] mt-1 font-mono break-all">
                       Ledger Balance: ${account?.balance.toLocaleString('en-US', { minimumFractionDigits: 2 })} USD
                     </p>
                   </div>
 
-                  <span className="bg-emerald-400/20 text-emerald-300 border border-emerald-400/30 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider">
+                  <span className="bg-emerald-400/20 text-emerald-300 border border-emerald-400/30 px-2.5 py-1 rounded-full text-[10px] sm:text-xs font-bold uppercase tracking-wider shrink-0">
                     {account?.status || 'Active'}
                   </span>
                 </div>
@@ -722,23 +722,23 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
 
         {/* ==================== TAB 3: TRANSACTIONS HISTORY ==================== */}
         {activeTab === 'history' && (
-          <div className="bg-white rounded-2xl border border-[#D9DEE5] shadow-xs p-6 space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="bg-white rounded-2xl border border-[#D9DEE5] shadow-xs p-4 sm:p-6 space-y-4 max-w-full min-w-0">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <h3 className="font-bold text-base text-[#0F3557]">Full Transaction History</h3>
               
-              <div className="flex items-center gap-3">
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
                 <input
                   type="text"
                   value={txSearch}
                   onChange={e => setTxSearch(e.target.value)}
                   placeholder="Search reference or recipient..."
-                  className="px-3 py-1.5 text-xs border border-[#D9DEE5] rounded-xl focus:outline-none focus:border-[#0057B8]"
+                  className="px-3 py-1.5 text-xs border border-[#D9DEE5] rounded-xl focus:outline-none focus:border-[#0057B8] w-full sm:w-auto"
                 />
 
                 <select
                   value={txTypeFilter}
                   onChange={e => setTxTypeFilter(e.target.value)}
-                  className="px-3 py-1.5 text-xs border border-[#D9DEE5] rounded-xl focus:outline-none focus:border-[#0057B8] bg-white text-[#1E2A36]"
+                  className="px-3 py-1.5 text-xs border border-[#D9DEE5] rounded-xl focus:outline-none focus:border-[#0057B8] bg-white text-[#1E2A36] w-full sm:w-auto"
                 >
                   <option value="ALL">All Types</option>
                   <option value="Transfer Sent">Transfer Sent</option>
@@ -749,9 +749,9 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
               </div>
             </div>
 
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto w-full max-w-full border border-[#D9DEE5] rounded-xl">
               <table className="w-full text-left text-xs">
-                <thead className="bg-[#F3F5F7] text-[#6E7A87] uppercase text-[10px] tracking-wider border-b border-[#D9DEE5]">
+                <thead className="bg-[#F3F5F7] text-[#6E7A87] uppercase text-[10px] tracking-wider border-b border-[#D9DEE5] whitespace-nowrap">
                   <tr>
                     <th className="py-3 px-4">Ref #</th>
                     <th className="py-3 px-4">Counterparty / Sender</th>
@@ -763,7 +763,7 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
                     <th className="py-3 px-4">Date & Time</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-[#D9DEE5]">
+                <tbody className="divide-y divide-[#D9DEE5] whitespace-nowrap">
                   {filteredTxs.map(tx => {
                     const isCredit = tx.recipientUserId === user?.id || tx.type === 'Transfer Received' || tx.type === 'Credit Adjustment' || tx.type === 'Initial Deposit';
                     return (

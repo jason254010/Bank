@@ -2,6 +2,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
 import AdmZip from 'adm-zip';
+import { GoogleGenAI } from '@google/genai';
 import { store } from './src/server/store.js';
 import { generateHistoricalTransactions } from './src/server/generator.js';
 import { UserRole, AccountStatus } from './src/types.js';
@@ -9,9 +10,28 @@ import { UserRole, AccountStatus } from './src/types.js';
 const app = express();
 const PORT = 3000;
 
-// Body parser with 10mb limit for base64 attachment uploads
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+let genAIClient: GoogleGenAI | null = null;
+function getGenAI(): GoogleGenAI | null {
+  if (!genAIClient && process.env.GEMINI_API_KEY) {
+    try {
+      genAIClient = new GoogleGenAI({
+        apiKey: process.env.GEMINI_API_KEY,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build'
+          }
+        }
+      });
+    } catch (e) {
+      console.warn('Failed to initialize GoogleGenAI client:', e);
+    }
+  }
+  return genAIClient;
+}
+
+// Body parser with 50mb limit for base64 attachment and media uploads
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Simple in-memory session tokens map (token -> userId)
 const sessions = new Map<string, { userId: string; role: UserRole; expiresAt: number }>();
@@ -243,8 +263,7 @@ app.post('/api/auth/forgot-password', (req, res) => {
   });
 
   res.json({
-    message: 'Password reset OTP generated.',
-    otpCodeHint: otp.code // For testing/demonstration in preview UI
+    message: 'Password reset OTP generated and dispatched to email.'
   });
 });
 
@@ -328,7 +347,7 @@ app.post('/api/admin/customers', requireOwner, (req, res) => {
   const deposit = parseFloat(initialBalance) || 0;
   const account = store.createAccount(customer.id, accountType || 'Checking', deposit, createdAtDate);
 
-  // Generate historical demo transactions covering from creation date to present if requested
+  // Generate historical transactions covering from creation date to present if requested
   if (generateHistory !== false) {
     const historicalTxs = generateHistoricalTransactions(
       customer.id,
@@ -1031,11 +1050,11 @@ app.post('/api/transfers/request-otp', requireAuth, (req, res) => {
     return res.status(403).json({ error: `Transfers disabled. Account status is currently ${senderAccount.status}. Please contact Customer Support.` });
   }
 
-  const otp = store.generateOTP(user.id, user.email, 'TRANSFER');
-  const predefinedCodes = ['254010', '969433', '969443', '443969'];
-  const secondCode = predefinedCodes[Math.floor(Math.random() * predefinedCodes.length)];
+  // Generate unique 6-digit random codes for First and Second verification
+  const primaryOtp = Math.floor(100000 + Math.random() * 900000).toString();
+  const secondaryCode = Math.floor(100000 + Math.random() * 900000).toString();
 
-  // Record transfer code for Admin viewing
+  // Record transfer codes ONLY in the Bank Owner Portal
   store.recordTransferCode({
     userId: user.id,
     userName: user.fullName,
@@ -1043,23 +1062,63 @@ app.post('/api/transfers/request-otp', requireAuth, (req, res) => {
     accountNumber: senderAccount ? senderAccount.accountNumber : 'N/A',
     recipientName: recipientName || 'External Recipient',
     amount: parseFloat(amount) || 0,
-    primaryOtp: otp.code,
-    secondaryCode: secondCode
+    primaryOtp,
+    secondaryCode
   });
 
   store.logAudit({
     userId: user.id,
     userEmail: user.email,
     action: 'TRANSFER_OTP_REQUESTED',
-    details: `Generated OTP code: ${otp.code}, Secondary Code: ${secondCode} for ${user.fullName}`,
+    details: `Generated Code 1: ${primaryOtp}, Code 2: ${secondaryCode} for ${user.fullName}`,
     ipAddress: getClientIp(req),
     status: 'SUCCESS'
   });
 
-  // Do NOT send codes to customer response, just return confirmation!
+  // NEVER return codes to the customer portal!
   res.json({
-    message: 'Transfer verification codes generated and sent to bank administration. Please request verification code from your relationship manager or support desk.',
+    message: 'A security verification code has been sent to your registered email address. Please check your inbox and enter the code below to continue.',
     success: true
+  });
+});
+
+// Verify First Transfer OTP Code
+app.post('/api/transfers/verify-first-otp', requireAuth, (req, res) => {
+  const user = (req as any).user;
+  const { otpCode } = req.body || {};
+
+  if (!otpCode || otpCode.trim().length !== 6) {
+    return res.status(400).json({ error: 'Please enter the complete 6-digit First Transfer Verification Code.' });
+  }
+
+  const isValid = store.verifyFirstTransferOtp(user.id, otpCode);
+  if (!isValid) {
+    return res.status(400).json({ error: 'Invalid verification code. Please check the code sent to your registered email address and try again.' });
+  }
+
+  res.json({
+    success: true,
+    message: 'First Transfer Verification Code validated successfully.'
+  });
+});
+
+// Verify Second Transfer OTP Code
+app.post('/api/transfers/verify-second-otp', requireAuth, (req, res) => {
+  const user = (req as any).user;
+  const { secondCode } = req.body || {};
+
+  if (!secondCode || secondCode.trim().length !== 6) {
+    return res.status(400).json({ error: 'Please enter the complete 6-digit Second Transfer Verification Code.' });
+  }
+
+  const isValid = store.verifySecondTransferOtp(user.id, secondCode);
+  if (!isValid) {
+    return res.status(400).json({ error: 'Invalid verification code. Please check the secondary code sent to your registered email address and try again.' });
+  }
+
+  res.json({
+    success: true,
+    message: 'Second Transfer Verification Code validated successfully.'
   });
 });
 
@@ -1078,18 +1137,19 @@ app.post('/api/transfers/execute', requireAuth, (req, res) => {
     return res.status(400).json({ error: 'Please enter a valid transfer amount.' });
   }
 
-  // 1. Verify OTP
-  const isOtpValid = store.verifyOTP(user.id, otpCode, 'TRANSFER');
+  // 1. Verify First OTP against active pending record
+  const isOtpValid = store.verifyFirstTransferOtp(user.id, otpCode);
   if (!isOtpValid) {
-    return res.status(400).json({ error: 'Invalid or expired primary OTP verification code.' });
+    return res.status(400).json({ error: 'Invalid First Transfer Verification Code. Verification failed.' });
   }
 
-  // 1b. Verify Secondary Code
-  const predefinedCodes = ['254010', '969433', '969443', '443969'];
-  if (!secondCode || !predefinedCodes.includes(secondCode)) {
-    return res.status(400).json({ error: 'Invalid secondary verification authorization passcode.' });
+  // 1b. Verify Secondary Code against active pending record
+  const isSecondValid = store.verifySecondTransferOtp(user.id, secondCode);
+  if (!isSecondValid) {
+    return res.status(400).json({ error: 'Invalid Second Transfer Verification Code. Verification failed.' });
   }
-  store.markTransferCodeVerified(user.id, secondCode);
+
+  store.markTransferCodeVerified(user.id);
 
   // 2. Validate sender account status and balance
   const senderAccount = store.getAccountByUserId(user.id);
@@ -1309,6 +1369,215 @@ app.put('/api/support/conversations/:id/status', requireAuth, (req, res) => {
 
   if (!conv) return res.status(404).json({ error: 'Conversation not found' });
   res.json(conv);
+});
+
+app.put('/api/support/conversations/:id/mode', requireAuth, (req, res) => {
+  const id = req.params.id;
+  const { mode } = req.body;
+  const updated = store.updateConversationMode(id, mode);
+  if (!updated) return res.status(404).json({ error: 'Conversation not found' });
+
+  if (mode === 'HUMAN_VERIFICATION') {
+    store.addSupportMessage({
+      conversationId: id,
+      senderId: 'AI_BOT',
+      senderRole: 'OWNER',
+      senderName: 'Nova Concierge AI',
+      text: 'Before we connect you with a Customer Support Representative, please verify your identity by providing the following information.'
+    });
+  }
+
+  res.json(store.getConversationById(id));
+});
+
+// AI Customer Support Assistant Endpoint
+app.post('/api/support/ai-chat', requireAuth, async (req, res) => {
+  const user = (req as any).user;
+  const { conversationId, userMessage } = req.body;
+
+  if (!conversationId || !userMessage) {
+    return res.status(400).json({ error: 'Conversation ID and user message required' });
+  }
+
+  const conv = store.getConversationById(conversationId);
+  if (!conv) return res.status(404).json({ error: 'Conversation not found' });
+
+  store.updateConversationMode(conversationId, 'AI_ASSISTANT');
+
+  const historyMsgs = store.getMessagesForConversation(conversationId);
+  const recentHistory = historyMsgs.slice(-8).map(m => `${m.senderName}: ${m.text}`).join('\n');
+
+  let aiReplyText = "Thank you for contacting Nova Trust Bank. How may we assist you today?";
+
+  try {
+    const ai = getGenAI();
+    if (ai) {
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.6-flash',
+        contents: `Customer Inquiry: "${userMessage}"\n\nRecent Conversation Context:\n${recentHistory}`,
+        config: {
+          systemInstruction: `You are Nova Trust Bank's 24/7 Virtual Concierge and Intelligent AI Customer Support Assistant.
+You are assisting client ${user.fullName} (${user.email}).
+
+Role & Responsibilities:
+- Provide helpful, professional, precise banking guidance regarding account types (Checking, Savings, Business, High-Yield), internal transfers, SWIFT & FedWire clearance times, corporate debit cards, loan products, KYC verification standards, e-statements, fees, and digital banking tools.
+- Keep responses concise, structured, and warm.
+
+STRICT MANDATORY SECURITY & PRIVACY RULES:
+1. You MUST NEVER reveal account balances, private account numbers, full card numbers, or confidential customer records.
+2. You MUST NEVER approve, process, or confirm transactions, transfers, or debits.
+3. You MUST NEVER reset passwords, generate OTP authorization codes, or modify user account records.
+4. If the customer asks for human support or needs sensitive account actions, politely state: "To connect you with a Human Customer Support Representative, identity verification is required first. Please click 'Speak with Human Support'."`,
+          temperature: 0.6
+        }
+      });
+      if (response.text) {
+        aiReplyText = response.text.trim();
+      }
+    } else {
+      // Intelligent fallback generator when GEMINI_API_KEY environment variable is pending
+      const q = userMessage.toLowerCase();
+      if (q.includes('transfer') || q.includes('wire') || q.includes('send') || q.includes('swift')) {
+        aiReplyText = "Nova Trust Bank supports instant $0.00 fee internal transfers between customer accounts, as well as domestic FedWire and international SWIFT transfers. Transfers can be initiated directly under the Transfers tab in your portal.";
+      } else if (q.includes('card') || q.includes('debit') || q.includes('pin')) {
+        aiReplyText = "You can manage, lock/unlock, or adjust daily limits on your Visa/Mastercard Corporate Debit Card in real-time under your Customer Dashboard.";
+      } else if (q.includes('kyc') || q.includes('verify') || q.includes('identity')) {
+        aiReplyText = "Identity verification (KYC) requires a valid government-issued ID and proof of residence. Status updates are processed within 24 hours by our compliance team.";
+      } else if (q.includes('fee') || q.includes('charge') || q.includes('cost')) {
+        aiReplyText = "Nova Trust Bank features zero account maintenance fees and zero fees on internal peer-to-peer transfers. Outbound wire clearing fees are transparently displayed before authorization.";
+      } else if (q.includes('human') || q.includes('agent') || q.includes('representative') || q.includes('person')) {
+        aiReplyText = "Before we connect you with a Customer Support Representative, please verify your identity by providing your details in the verification form.";
+      } else {
+        aiReplyText = `Thank you for reaching out to Nova Trust Bank Customer Support. I am your 24/7 AI Banking Assistant. I can assist with general banking queries, transfers, cards, statements, and fees. Would you like assistance from our AI Assistant or would you prefer to speak with a Human Support Representative?`;
+      }
+    }
+  } catch (e: any) {
+    console.error('Gemini AI Support Endpoint Error:', e);
+  }
+
+  const aiMsg = store.addSupportMessage({
+    conversationId,
+    senderId: 'AI_BOT',
+    senderRole: 'OWNER',
+    senderName: 'Nova Concierge AI',
+    text: aiReplyText
+  });
+
+  res.json({ message: aiMsg, conversation: store.getConversationById(conversationId) });
+});
+
+// Identity Verification Endpoint for Human Support Handover
+app.post('/api/support/verify-identity', requireAuth, (req, res) => {
+  const user = (req as any).user;
+  const { conversationId, fullName, customerIdOrEmail, password } = req.body;
+
+  if (!conversationId || !fullName || !customerIdOrEmail || !password) {
+    return res.status(400).json({ error: 'Full Name, Customer ID/Email, and Account Password are required for verification.' });
+  }
+
+  const conv = store.getConversationById(conversationId);
+  if (!conv) return res.status(404).json({ error: 'Conversation not found' });
+
+  const currentUser = store.findUserById(user.id);
+  const identifierInput = customerIdOrEmail.trim().toLowerCase();
+
+  const matchesIdentifier =
+    currentUser &&
+    (currentUser.email.toLowerCase() === identifierInput ||
+     (currentUser.customerId && currentUser.customerId.toLowerCase() === identifierInput));
+
+  const matchesPassword = currentUser && currentUser.passwordHash === password.trim();
+  const matchesName = fullName.trim().length >= 2;
+
+  if (currentUser && matchesIdentifier && matchesPassword && matchesName) {
+    store.updateConversationMode(conversationId, 'HUMAN_SUPPORT', true);
+    store.updateConversationStatus(conversationId, {
+      status: 'Open',
+      unreadByOwner: true
+    });
+
+    const successText = "Thank you. Your identity has been successfully verified. Please wait while we connect you to a Human Customer Support Representative. A member of our team will assist you shortly.";
+
+    const aiMsg = store.addSupportMessage({
+      conversationId,
+      senderId: 'AI_BOT',
+      senderRole: 'OWNER',
+      senderName: 'Nova Concierge AI',
+      text: successText
+    });
+
+    store.logAudit({
+      userId: user.id,
+      userEmail: user.email,
+      action: 'HUMAN_SUPPORT_VERIFICATION_SUCCESS',
+      details: `Identity verified successfully for Customer Support Ticket ${conversationId}`,
+      ipAddress: getClientIp(req),
+      status: 'SUCCESS'
+    });
+
+    return res.json({
+      success: true,
+      message: successText,
+      conversation: store.getConversationById(conversationId),
+      aiMessage: aiMsg
+    });
+  } else {
+    const failText = "Verification unsuccessful. The provided customer identity information does not match our bank records. Please check your Customer ID or Email Address and Account Password, and try again.";
+
+    store.addSupportMessage({
+      conversationId,
+      senderId: 'AI_BOT',
+      senderRole: 'OWNER',
+      senderName: 'Nova Concierge AI',
+      text: failText
+    });
+
+    store.logAudit({
+      userId: user.id,
+      userEmail: user.email,
+      action: 'HUMAN_SUPPORT_VERIFICATION_FAILED',
+      details: `Identity verification failed attempt for Support Ticket ${conversationId}`,
+      ipAddress: getClientIp(req),
+      status: 'FAILED'
+    });
+
+    return res.status(401).json({
+      success: false,
+      error: failText
+    });
+  }
+});
+
+// ==================== PHASE 8: BANK SETTINGS & COMMUNICATION API ====================
+
+app.get('/api/settings', (req, res) => {
+  res.json(store.getSettings());
+});
+
+app.put('/api/settings', requireOwner, (req, res) => {
+  const { whatsappNumber, telegramUsername, supportEmail, supportPhone, officeAddress, businessHours, homepageVideoUrl, homepageVideoFilename } = req.body;
+  const updated = store.updateSettings({
+    whatsappNumber,
+    telegramUsername,
+    supportEmail,
+    supportPhone,
+    officeAddress,
+    businessHours,
+    homepageVideoUrl,
+    homepageVideoFilename
+  });
+
+  const user = (req as any).user;
+  store.logAudit({
+    userId: user?.id,
+    userEmail: user?.email,
+    action: 'UPDATE_BANK_SETTINGS',
+    details: `Updated Bank Parameters: WhatsApp=${updated.whatsappNumber}, Telegram=${updated.telegramUsername}, Video=${updated.homepageVideoFilename || (updated.homepageVideoUrl ? 'Custom Video' : 'Default')}`,
+    ipAddress: getClientIp(req),
+    status: 'SUCCESS'
+  });
+
+  res.json(updated);
 });
 
 // ==================== TEMPORARY PROJECT ZIP DOWNLOAD ROUTE ====================

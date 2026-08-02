@@ -52,10 +52,11 @@ const POPULAR_BANKS = [
 
 type WorkflowStep =
   | 'FORM' // Transfer form & beneficiary selection
-  | 'VALIDATING_PROCESSING' // First progress bar (30 seconds)
-  | 'OTP_VERIFICATION' // Primary 6-digit OTP code entry
-  | 'SECOND_VERIFICATION' // Secondary 6-digit verification passcode entry
-  | 'FINAL_PROCESSING' // 40-second realistic verification loading screen
+  | 'VALIDATING_PROCESSING' // First progress bar
+  | 'OTP_VERIFICATION' // Primary 6-digit OTP code entry (First Transfer Verification Code)
+  | 'SECOND_VALIDATING_PROCESSING' // Second progress bar animation
+  | 'SECOND_VERIFICATION' // Secondary 6-digit verification code entry (Second Transfer Verification Code)
+  | 'FINAL_PROCESSING' // Final clearing settlement screen
   | 'SUCCESS'; // Successful receipt screen
 
 export const TransferSection: React.FC<TransferSectionProps> = ({
@@ -63,6 +64,16 @@ export const TransferSection: React.FC<TransferSectionProps> = ({
   onReturnToDashboard
 }) => {
   const { user, account, refreshUser, showToast } = useAuth();
+
+  const maskEmail = (emailStr?: string) => {
+    if (!emailStr || !emailStr.includes('@')) return 'your registered email address';
+    const [name, domain] = emailStr.split('@');
+    if (name.length <= 2) return `${name[0]}*@${domain}`;
+    const firstTwo = name.slice(0, 2);
+    const lastOne = name.slice(-1);
+    const asterisks = '*'.repeat(Math.max(3, name.length - 3));
+    return `${firstTwo}${asterisks}${lastOne}@${domain}`;
+  };
 
   // Active Tab: "transfer" or "beneficiaries"
   const [activeSubTab, setActiveSubTab] = useState<'transfer' | 'beneficiaries'>('transfer');
@@ -88,7 +99,7 @@ export const TransferSection: React.FC<TransferSectionProps> = ({
 
   // Transfer Form State
   const [formData, setFormData] = useState({
-    transferType: 'Internal' as 'Internal' | 'External Demo',
+    transferType: 'Internal' as 'Internal' | 'External Wire',
     bankName: 'Nova Trust Bank',
     recipientAccountNumber: '',
     recipientName: '',
@@ -119,18 +130,19 @@ export const TransferSection: React.FC<TransferSectionProps> = ({
   const [finalProgress, setFinalProgress] = useState(0);
   const [finalStatusMessage, setFinalStatusMessage] = useState('Verifying OTP authentication code...');
 
-  // Primary OTP Verification States
+  // Primary OTP Verification States (First Transfer Verification Code)
   const [otpDigits, setOtpDigits] = useState<string[]>(['', '', '', '', '', '']);
   const otpInputRefs = useRef<(HTMLInputElement | null)[]>([]);
-  const [otpHint, setOtpHint] = useState<string | null>(null);
+  const [primaryCodeError, setPrimaryCodeError] = useState<string | null>(null);
   const [timerSeconds, setTimerSeconds] = useState(300); // 5 minutes countdown
   const [isResendingOtp, setIsResendingOtp] = useState(false);
+  const [isVerifyingPrimaryOtp, setIsVerifyingPrimaryOtp] = useState(false);
 
-  // Secondary Verification States
-  const [secondCode, setSecondCode] = useState<string>('254010');
+  // Secondary Verification States (Second Transfer Verification Code)
   const [secondOtpDigits, setSecondOtpDigits] = useState<string[]>(['', '', '', '', '', '']);
   const secondOtpInputRefs = useRef<(HTMLInputElement | null)[]>([]);
   const [secondCodeError, setSecondCodeError] = useState<string | null>(null);
+  const [isVerifyingSecondOtp, setIsVerifyingSecondOtp] = useState(false);
 
   // 40-Second Verification Screen State
   const [procPhaseState, setProcPhaseState] = useState<'PROCESSING' | 'PAUSED' | 'FINALIZING'>('PROCESSING');
@@ -287,21 +299,18 @@ export const TransferSection: React.FC<TransferSectionProps> = ({
   // Request OTP from Server
   const requestTransferOtpCode = async () => {
     try {
-      const res = await apiRequest<{ message: string; otpCodeHint: string; secondVerificationCode?: string }>('/api/transfers/request-otp', {
-        method: 'POST'
+      await apiRequest('/api/transfers/request-otp', {
+        method: 'POST',
+        body: JSON.stringify({
+          recipientName: formData.recipientName,
+          amount: formData.amount
+        })
       });
-      setOtpHint(res.otpCodeHint || '123456');
-      
-      const predefinedCodes = ['254010', '969433', '969443', '443969'];
-      const chosenSecond = res.secondVerificationCode && predefinedCodes.includes(res.secondVerificationCode)
-        ? res.secondVerificationCode
-        : predefinedCodes[Math.floor(Math.random() * predefinedCodes.length)];
-      setSecondCode(chosenSecond);
 
       setTimerSeconds(300); // 5 mins
       setOtpDigits(['', '', '', '', '', '']);
       setStep('OTP_VERIFICATION');
-      showToast('Primary verification code sent to registered email address', 'success');
+      showToast(`A security verification code has been sent to ${maskEmail(user?.email)}.`, 'info');
       
       // Auto focus first OTP input after DOM renders
       setTimeout(() => {
@@ -317,19 +326,17 @@ export const TransferSection: React.FC<TransferSectionProps> = ({
   const handleResendOtp = async () => {
     setIsResendingOtp(true);
     try {
-      const res = await apiRequest<{ message: string; otpCodeHint: string; secondVerificationCode?: string }>('/api/transfers/request-otp', {
-        method: 'POST'
+      await apiRequest('/api/transfers/request-otp', {
+        method: 'POST',
+        body: JSON.stringify({
+          recipientName: formData.recipientName,
+          amount: formData.amount
+        })
       });
-      setOtpHint(res.otpCodeHint || '123456');
-      const predefinedCodes = ['254010', '969433', '969443', '443969'];
-      const chosenSecond = res.secondVerificationCode && predefinedCodes.includes(res.secondVerificationCode)
-        ? res.secondVerificationCode
-        : predefinedCodes[Math.floor(Math.random() * predefinedCodes.length)];
-      setSecondCode(chosenSecond);
 
       setTimerSeconds(300);
       setOtpDigits(['', '', '', '', '', '']);
-      showToast('A new OTP code has been sent to your email', 'success');
+      showToast(`A new security verification code has been sent to ${maskEmail(user?.email)}.`, 'info');
       setTimeout(() => otpInputRefs.current[0]?.focus(), 100);
     } catch (err: any) {
       showToast(err.message || 'Failed to resend OTP', 'error');
@@ -374,72 +381,108 @@ export const TransferSection: React.FC<TransferSectionProps> = ({
     otpInputRefs.current[nextIndex]?.focus();
   };
 
-  // Step 1: Handle Verify Primary OTP & Proceed to Secondary Verification
-  const handleVerifyPrimaryOtp = () => {
+  // Step 1: Handle Verify Primary OTP & Proceed to Secondary Processing
+  const handleVerifyPrimaryOtp = async () => {
     const fullOtp = otpDigits.join('');
     if (fullOtp.length < 6) {
-      showToast('Please enter the complete 6-digit primary OTP code.', 'error');
+      setPrimaryCodeError('Please enter the complete 6-digit First Transfer Verification Code.');
+      showToast('Please enter the complete 6-digit First Transfer Verification Code.', 'error');
       return;
     }
 
-    if (otpHint && fullOtp !== otpHint) {
-      showToast('Invalid primary verification code. Please check your email and try again.', 'error');
-      return;
+    setIsVerifyingPrimaryOtp(true);
+    setPrimaryCodeError(null);
+
+    try {
+      await apiRequest('/api/transfers/verify-first-otp', {
+        method: 'POST',
+        body: JSON.stringify({ otpCode: fullOtp })
+      });
+
+      // Advance to Step 8: SECOND_VALIDATING_PROCESSING (Second Processing Animation)
+      setStep('SECOND_VALIDATING_PROCESSING');
+      setValProgress(0);
+
+      const startTime = Date.now();
+      const duration = 5000; // 5 seconds second processing animation
+
+      const interval = setInterval(() => {
+        const elapsed = Date.now() - startTime;
+        const pct = Math.min(100, Math.floor((elapsed / duration) * 100));
+        setValProgress(pct);
+
+        if (pct < 33) {
+          setValStatusMessage('Validating First Transfer Verification Code...');
+        } else if (pct < 66) {
+          setValStatusMessage('Synchronizing security protocol ledger...');
+        } else {
+          setValStatusMessage('Preparing Second Transfer Verification Code entry...');
+        }
+
+        if (pct >= 100) {
+          clearInterval(interval);
+          setSecondOtpDigits(['', '', '', '', '', '']);
+          setSecondCodeError(null);
+          setStep('SECOND_VERIFICATION');
+          showToast('First verification code validated. Please enter Second Transfer Verification Code.', 'info');
+          setTimeout(() => {
+            secondOtpInputRefs.current[0]?.focus();
+          }, 200);
+        }
+      }, 100);
+    } catch (err: any) {
+      setPrimaryCodeError(err.message || 'Invalid verification code. Please check the code sent to your registered email address and try again.');
+      showToast(err.message || 'Invalid verification code.', 'error');
+    } finally {
+      setIsVerifyingPrimaryOtp(false);
     }
-
-    // Advance to Step 3B: SECOND_VERIFICATION
-    setSecondOtpDigits(['', '', '', '', '', '']);
-    setSecondCodeError(null);
-    setStep('SECOND_VERIFICATION');
-    showToast('Primary OTP verified successfully. Secondary verification required.', 'info');
-
-    setTimeout(() => {
-      secondOtpInputRefs.current[0]?.focus();
-    }, 200);
   };
 
-  // Step 2: Handle Secondary Code Verification & Start 40-Second Verification Process
-  const handleVerifySecondCodeAndStartFinal = () => {
+  // Step 2: Handle Secondary Code Verification & Start Final Verification Process
+  const handleVerifySecondCodeAndStartFinal = async () => {
     const fullSecond = secondOtpDigits.join('');
     if (fullSecond.length < 6) {
-      setSecondCodeError('Please enter the complete 6-digit secondary verification code.');
-      showToast('Please enter the complete 6-digit secondary verification code.', 'error');
+      setSecondCodeError('Please enter the complete 6-digit Second Transfer Verification Code.');
+      showToast('Please enter the complete 6-digit Second Transfer Verification Code.', 'error');
       return;
     }
 
-    const validCodes = ['254010', '969433', '969443', '443969'];
-    if (fullSecond !== secondCode && !validCodes.includes(fullSecond)) {
-      setSecondCodeError('Wrong verification code entered. Please input the correct code or click "Resend Code" to request a new code.');
-      showToast('Wrong code entered. Please input the correct code or click Resend.', 'error');
-      return;
-    }
-
+    setIsVerifyingSecondOtp(true);
     setSecondCodeError(null);
-    // Code verified! Begin 40-second realistic verification loading screen
-    start40SecondFinalVerificationProcess(otpDigits.join(''), fullSecond);
+
+    try {
+      await apiRequest('/api/transfers/verify-second-otp', {
+        method: 'POST',
+        body: JSON.stringify({ secondCode: fullSecond })
+      });
+
+      // Both codes verified successfully! Begin final verification clearance process
+      start40SecondFinalVerificationProcess(otpDigits.join(''), fullSecond);
+    } catch (err: any) {
+      setSecondCodeError(err.message || 'Invalid verification code. Please check the code sent to your registered email address and try again.');
+      showToast(err.message || 'Invalid verification code.', 'error');
+    } finally {
+      setIsVerifyingSecondOtp(false);
+    }
   };
 
   // Handle Resend / Request New Secondary Code
   const handleResendSecondCode = async () => {
     try {
-      const res = await apiRequest<{ message: string; otpCodeHint: string; secondVerificationCode?: string }>('/api/transfers/request-otp', {
-        method: 'POST'
+      await apiRequest('/api/transfers/request-otp', {
+        method: 'POST',
+        body: JSON.stringify({
+          recipientName: formData.recipientName,
+          amount: formData.amount
+        })
       });
-      const validCodes = ['254010', '969433', '969443', '443969'];
-      const chosenSecond = res.secondVerificationCode && validCodes.includes(res.secondVerificationCode)
-        ? res.secondVerificationCode
-        : validCodes[Math.floor(Math.random() * validCodes.length)];
-      setSecondCode(chosenSecond);
     } catch (e) {
-      const validCodes = ['254010', '969433', '969443', '443969'];
-      const pool = validCodes.filter(c => c !== secondCode);
-      const newCode = pool[Math.floor(Math.random() * pool.length)] || validCodes[0];
-      setSecondCode(newCode);
+      // Ignore transient errors
     }
 
     setSecondOtpDigits(['', '', '', '', '', '']);
     setSecondCodeError(null);
-    showToast('A new secondary verification code has been generated and sent to bank administration.', 'success');
+    showToast(`A new secondary verification passcode has been sent to ${maskEmail(user?.email)}.`, 'info');
     setTimeout(() => {
       secondOtpInputRefs.current[0]?.focus();
     }, 100);
@@ -970,7 +1013,7 @@ Status: SUCCESSFUL`;
           {/* Main Transfer Form */}
           <form onSubmit={handleStartTransferProcessing} className="space-y-5 text-xs">
 
-            {/* Transfer Type Selection (Internal vs External Demo) */}
+            {/* Transfer Type Selection */}
             <div>
               <label className="block font-bold text-[#1E2A36] mb-1.5">
                 Transfer Type <span className="text-rose-600">*</span>
@@ -994,9 +1037,9 @@ Status: SUCCESSFUL`;
 
                 <button
                   type="button"
-                  onClick={() => setFormData({ ...formData, transferType: 'External Demo' })}
+                  onClick={() => setFormData({ ...formData, transferType: 'External Wire' })}
                   className={`py-3 px-4 rounded-xl border text-left flex items-center gap-3 transition-all ${
-                    formData.transferType === 'External Demo'
+                    formData.transferType === 'External Wire'
                       ? 'border-[#0057B8] bg-[#0057B8]/10 text-[#0057B8] font-bold shadow-xs'
                       : 'border-[#D9DEE5] bg-white text-[#6E7A87] hover:border-[#0057B8]'
                   }`}
@@ -1130,7 +1173,7 @@ Status: SUCCESSFUL`;
 
               {isInternalMatch === false && formData.recipientAccountNumber.length >= 6 && (
                 <p className="text-[11px] text-[#6E7A87] mt-1 italic">
-                  External account or unmapped recipient. Manual account name entry enabled for demo transfers.
+                  External interbank recipient. Manual account verification enabled.
                 </p>
               )}
             </div>
@@ -1344,41 +1387,35 @@ Status: SUCCESSFUL`;
         </div>
       )}
 
-      {/* ==================== STEP 3: OTP VERIFICATION ==================== */}
+      {/* ==================== STEP 3: FIRST OTP VERIFICATION ==================== */}
       {step === 'OTP_VERIFICATION' && (
         <div className="bg-white rounded-3xl border border-[#D9DEE5] shadow-xl p-6 sm:p-10 space-y-6 max-w-xl mx-auto">
 
           <div className="text-center space-y-2">
             <div className="w-14 h-14 bg-emerald-100 text-emerald-700 rounded-full flex items-center justify-center mx-auto mb-2">
-              <Mail className="w-7 h-7" />
+              <ShieldCheck className="w-7 h-7 text-[#0057B8]" />
             </div>
             <h2 className="text-xl font-extrabold text-[#0F3557]">Security Verification Required</h2>
-            <p className="text-xs text-[#6E7A87] max-w-sm mx-auto">
-              A verification code has been sent to your registered email address:
+            <p className="text-xs text-[#6E7A87] max-w-md mx-auto">
+              A security verification code has been sent to your registered email address (<span className="font-semibold text-[#0F3557]">{maskEmail(user?.email)}</span>). Please check your inbox and enter the code below to continue.
             </p>
-            <p className="text-xs font-bold text-[#0F3557] font-mono">{user?.email}</p>
           </div>
 
-          {/* Simulated Email Delivery Toast / Banner */}
-          {otpHint && (
-            <div className="p-4 bg-emerald-50 border border-emerald-300 rounded-2xl text-xs text-emerald-950 space-y-1.5 shadow-2xs">
-              <div className="flex items-center justify-between font-bold text-emerald-900">
-                <span className="flex items-center gap-1.5">
-                  <Sparkles className="w-4 h-4 text-emerald-600" />
-                  <span>Simulated Inbox Delivery</span>
-                </span>
-                <span className="text-[10px] bg-emerald-200 text-emerald-900 px-2 py-0.5 rounded-full uppercase">
-                  DEMO OTP
-                </span>
-              </div>
-              <p className="text-[11px] text-emerald-800">
-                In a live environment, this code is sent to your email inbox. Your verification code is:
-              </p>
-              <div className="p-2 bg-white rounded-xl border border-emerald-200 text-center font-mono text-2xl font-black tracking-widest text-emerald-900 shadow-inner">
-                {otpHint}
-              </div>
+          {/* Primary Error Alert */}
+          {primaryCodeError && (
+            <div className="p-3.5 bg-red-50 border border-red-200 text-red-700 rounded-2xl text-xs flex items-center gap-2.5 animate-shake shadow-xs">
+              <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
+              <span className="font-semibold">{primaryCodeError}</span>
             </div>
           )}
+
+          {/* Security Notice */}
+          <div className="p-3.5 bg-blue-50 border border-blue-200 rounded-2xl text-xs text-blue-950 flex items-center gap-3">
+            <ShieldCheck className="w-5 h-5 text-[#0057B8] shrink-0" />
+            <p className="text-xs text-blue-900 leading-relaxed">
+              For your account security, a 6-digit verification code was sent to <span className="font-semibold">{maskEmail(user?.email)}</span>. Never share your security codes with anyone.
+            </p>
+          </div>
 
           {/* Transfer Summary Review Card */}
           <div className="p-4 bg-[#F3F5F7] rounded-2xl border border-[#D9DEE5] text-xs space-y-2">
@@ -1401,7 +1438,7 @@ Status: SUCCESSFUL`;
           {/* 6-Digit OTP Boxes */}
           <div className="space-y-3">
             <label className="block text-center font-bold text-xs text-[#1E2A36]">
-              Enter 6-Digit Verification Code
+              Enter First Transfer Verification Code
             </label>
 
             <div className="flex justify-center gap-2 sm:gap-3">
@@ -1416,7 +1453,9 @@ Status: SUCCESSFUL`;
                   onChange={e => handleOtpDigitChange(idx, e.target.value)}
                   onKeyDown={e => handleOtpKeyDown(idx, e)}
                   onPaste={handleOtpPaste}
-                  className="w-11 h-13 sm:w-12 sm:h-14 text-center text-xl sm:text-2xl font-mono font-extrabold border-2 border-[#D9DEE5] rounded-xl focus:border-[#0057B8] focus:outline-none bg-white text-[#0F3557] shadow-xs"
+                  className={`w-11 h-13 sm:w-12 sm:h-14 text-center text-xl sm:text-2xl font-mono font-extrabold border-2 rounded-xl focus:outline-none bg-white text-[#0F3557] shadow-xs ${
+                    primaryCodeError ? 'border-red-400 focus:border-red-600 bg-red-50/20' : 'border-[#D9DEE5] focus:border-[#0057B8]'
+                  }`}
                 />
               ))}
             </div>
@@ -1425,7 +1464,7 @@ Status: SUCCESSFUL`;
             <div className="flex items-center justify-between text-xs pt-1">
               <div className="flex items-center gap-1.5 text-[#6E7A87]">
                 <Clock className="w-4 h-4 text-[#0057B8]" />
-                <span>Code expires in:</span>
+                <span>Session expires in:</span>
                 <span className="font-mono font-bold text-[#0F3557]">
                   {Math.floor(timerSeconds / 60)}:{('0' + (timerSeconds % 60)).slice(-2)}
                 </span>
@@ -1438,12 +1477,12 @@ Status: SUCCESSFUL`;
                 className="text-[#0057B8] hover:underline font-bold flex items-center gap-1"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isResendingOtp ? 'animate-spin' : ''}`} />
-                <span>Resend OTP</span>
+                <span>Resend / Refresh Code</span>
               </button>
             </div>
           </div>
 
-          {/* Action Buttons: Cancel or Authorize */}
+          {/* Action Buttons: Cancel or Verify */}
           <div className="pt-2 flex gap-3">
             <button
               type="button"
@@ -1459,16 +1498,69 @@ Status: SUCCESSFUL`;
             <button
               type="button"
               onClick={handleVerifyPrimaryOtp}
-              disabled={otpDigits.join('').length < 6}
+              disabled={otpDigits.join('').length < 6 || isVerifyingPrimaryOtp}
               className={`flex-1 py-3 text-white font-bold text-xs rounded-xl transition-all shadow-md flex items-center justify-center gap-2 ${
-                otpDigits.join('').length < 6
+                otpDigits.join('').length < 6 || isVerifyingPrimaryOtp
                   ? 'bg-gray-400 cursor-not-allowed opacity-60'
                   : 'bg-[#0057B8] hover:bg-[#004bb0]'
               }`}
             >
-              <ShieldCheck className="w-4 h-4" />
-              <span>Next: Secondary Verification</span>
+              {isVerifyingPrimaryOtp ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Validating Code...</span>
+                </>
+              ) : (
+                <>
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>Verify Code 1 & Proceed</span>
+                </>
+              )}
             </button>
+          </div>
+
+        </div>
+      )}
+
+      {/* ==================== STEP 3A: SECONDARY PROCESSING ANIMATION ==================== */}
+      {step === 'SECOND_VALIDATING_PROCESSING' && (
+        <div className="bg-white rounded-3xl border border-[#D9DEE5] shadow-xl p-8 sm:p-12 text-center space-y-8 max-w-xl mx-auto">
+          
+          <div className="w-20 h-20 rounded-full bg-indigo-100 text-indigo-700 mx-auto flex items-center justify-center relative">
+            <Loader2 className="w-12 h-12 text-indigo-600 animate-spin" />
+            <ShieldCheck className="w-6 h-6 text-[#0F3557] absolute" />
+          </div>
+
+          <div className="space-y-2">
+            <h2 className="text-2xl font-extrabold text-[#0F3557]">Processing Secondary Verification...</h2>
+            <p className="text-xs text-[#6E7A87] font-medium transition-all duration-300 min-h-[20px]">
+              {valStatusMessage}
+            </p>
+          </div>
+
+          {/* Animated Progress Bar */}
+          <div className="space-y-2">
+            <div className="w-full bg-[#F3F5F7] h-3 rounded-full overflow-hidden border border-[#D9DEE5] p-0.5">
+              <div
+                className="bg-gradient-to-r from-[#0F3557] via-indigo-600 to-[#0057B8] h-full rounded-full transition-all duration-150"
+                style={{ width: `${valProgress}%` }}
+              ></div>
+            </div>
+            <div className="flex justify-between items-center text-xs font-mono font-bold text-[#0F3557]">
+              <span>SECONDARY CLEARANCE</span>
+              <span>{valProgress}%</span>
+            </div>
+          </div>
+
+          <div className="p-4 bg-[#F3F5F7] rounded-2xl border border-[#D9DEE5] text-left text-xs space-y-1 font-mono text-[#6E7A87]">
+            <div className="flex justify-between">
+              <span>First Verification Code:</span>
+              <span className="text-emerald-700 font-bold">Passed</span>
+            </div>
+            <div className="flex justify-between">
+              <span>Next Step:</span>
+              <span className="text-indigo-700 font-bold">Second Transfer Verification Code</span>
+            </div>
           </div>
 
         </div>
@@ -1482,9 +1574,9 @@ Status: SUCCESSFUL`;
             <div className="w-14 h-14 bg-indigo-100 text-indigo-700 rounded-full flex items-center justify-center mx-auto mb-2 shadow-xs">
               <ShieldCheck className="w-8 h-8" />
             </div>
-            <h2 className="text-xl font-extrabold text-[#0F3557]">Secondary Authorization Code Required</h2>
+            <h2 className="text-xl font-extrabold text-[#0F3557]">Secondary Security Authorization</h2>
             <p className="text-xs text-[#6E7A87] max-w-md mx-auto">
-              To complete high-security transfer compliance, enter the secondary 6-digit verification code assigned to your transaction batch:
+              A secondary security verification code has been sent to your registered email address (<span className="font-semibold text-[#0F3557]">{maskEmail(user?.email)}</span>). Please enter the 6-digit code to finalize transfer authorization.
             </p>
           </div>
 
@@ -1517,7 +1609,7 @@ Status: SUCCESSFUL`;
           {/* 6-Digit Secondary Code Input Boxes */}
           <div className="space-y-3">
             <label className="block text-center font-bold text-xs text-[#1E2A36]">
-              Enter 6-Digit Secondary Authorization Code
+              Enter Second Transfer Verification Code
             </label>
 
             <div className="flex justify-center gap-2 sm:gap-3">
@@ -1572,7 +1664,7 @@ Status: SUCCESSFUL`;
                 className="inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-[#0057B8] hover:text-[#0F3557] hover:underline"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
-                <span>Resend / Request New Code</span>
+                <span>Resend / Refresh Second Code</span>
               </button>
             </div>
           </div>
@@ -1591,15 +1683,24 @@ Status: SUCCESSFUL`;
             <button
               type="button"
               onClick={handleVerifySecondCodeAndStartFinal}
-              disabled={secondOtpDigits.join('').length < 6}
+              disabled={secondOtpDigits.join('').length < 6 || isVerifyingSecondOtp}
               className={`flex-1 py-3 text-white font-bold text-xs rounded-xl transition-all shadow-md flex items-center justify-center gap-2 ${
-                secondOtpDigits.join('').length < 6
+                secondOtpDigits.join('').length < 6 || isVerifyingSecondOtp
                   ? 'bg-gray-400 cursor-not-allowed opacity-60'
                   : 'bg-indigo-600 hover:bg-indigo-700'
               }`}
             >
-              <ShieldCheck className="w-4 h-4" />
-              <span>Authorize Transfer</span>
+              {isVerifyingSecondOtp ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Validating Code 2...</span>
+                </>
+              ) : (
+                <>
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>Authorize Transfer</span>
+                </>
+              )}
             </button>
           </div>
 
@@ -1685,7 +1786,7 @@ Status: SUCCESSFUL`;
             </div>
 
             <div className="flex items-center justify-between">
-              <span className="text-[#6E7A87] font-medium">2. Secondary Passcode ({secondCode}):</span>
+              <span className="text-[#6E7A87] font-medium">2. Secondary Passcode Authorization:</span>
               <span className="text-emerald-700 font-bold flex items-center gap-1">
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 <span>Verified</span>

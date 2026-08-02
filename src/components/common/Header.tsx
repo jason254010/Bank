@@ -1,7 +1,7 @@
 import React from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { BrandLogo } from './BrandLogo';
-import { LogOut, Bell, Shield, User as UserIcon, MessageSquare } from 'lucide-react';
+import { LogOut, Bell, Shield, User as UserIcon, MessageSquare, Sun, Moon } from 'lucide-react';
 
 interface HeaderProps {
   activeTab?: string;
@@ -10,7 +10,7 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onOpenSupport }) => {
-  const { user, account, logout, unreadNotifications } = useAuth();
+  const { user, account, logout, unreadNotifications, theme, toggleTheme } = useAuth();
 
   return (
     <header className="bg-[#0B1F3A] text-white shadow-lg border-b border-[#0F4C81]/40 sticky top-0 z-40 font-sans">
@@ -29,6 +29,25 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onOpenS
           {user ? (
             <div className="flex items-center space-x-3 sm:space-x-4">
               
+              {/* Theme Toggle Button */}
+              <button
+                onClick={toggleTheme}
+                className="p-2 rounded-xl text-[#D4AF37] hover:bg-white/10 transition-colors flex items-center gap-1.5 text-xs font-semibold border border-white/10 bg-white/5"
+                title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+              >
+                {theme === 'dark' ? (
+                  <>
+                    <Sun className="w-4 h-4 text-[#D4AF37]" />
+                    <span className="hidden md:inline">Light</span>
+                  </>
+                ) : (
+                  <>
+                    <Moon className="w-4 h-4 text-[#D4AF37]" />
+                    <span className="hidden md:inline">Dark</span>
+                  </>
+                )}
+              </button>
+
               {/* Customer Quick Notifications Trigger */}
               {user.role === 'CUSTOMER' && setActiveTab && (
                 <button
@@ -75,9 +94,28 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onOpenS
               </button>
             </div>
           ) : (
-            <div className="flex items-center space-x-2 text-xs text-[#D4AF37]">
-              <Shield className="w-4 h-4 text-[#D4AF37]" />
-              <span className="font-mono font-semibold">TLS 1.3 256-Bit Encrypted Handshake</span>
+            <div className="flex items-center space-x-3 text-xs text-[#D4AF37]">
+              <button
+                onClick={toggleTheme}
+                className="p-2 rounded-xl text-[#D4AF37] hover:bg-white/10 transition-colors flex items-center gap-1.5 text-xs font-semibold border border-white/10 bg-white/5"
+                title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+              >
+                {theme === 'dark' ? (
+                  <>
+                    <Sun className="w-4 h-4 text-[#D4AF37]" />
+                    <span className="hidden sm:inline">Light</span>
+                  </>
+                ) : (
+                  <>
+                    <Moon className="w-4 h-4 text-[#D4AF37]" />
+                    <span className="hidden sm:inline">Dark</span>
+                  </>
+                )}
+              </button>
+              <div className="hidden sm:flex items-center gap-1.5 font-mono font-semibold">
+                <Shield className="w-4 h-4 text-[#D4AF37]" />
+                <span>TLS 1.3 256-Bit Encrypted</span>
+              </div>
             </div>
           )}
 

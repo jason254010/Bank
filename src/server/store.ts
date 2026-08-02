@@ -17,11 +17,13 @@ import {
   Beneficiary,
   UserRole,
   AccountType,
-  TransferCodeRecord
+  TransferCodeRecord,
+  BankSettings
 } from '../types.js';
 
 interface DBData {
   isInitialized?: boolean;
+  settings?: BankSettings;
   users: User[];
   accounts: Account[];
   cards: DebitCard[];
@@ -499,15 +501,47 @@ export class BankStore {
         customerEmail: customer.email,
         customerAccountNumber: acc ? acc.accountNumber : 'N/A',
         status: 'Open',
+        mode: 'INITIAL',
+        verifiedForHuman: false,
+        channel: 'IN_APP',
         isPinned: false,
         unreadByOwner: false,
         unreadByCustomer: false,
-        lastMessageText: 'Conversation started',
+        lastMessageText: 'Welcome to Nova trust Bank Customer Support. We’re here to assist you 24/7. How may we help you today?',
         lastMessageAt: new Date().toISOString(),
         createdAt: new Date().toISOString()
       };
       this.data.conversations.push(conv);
+
+      // Auto-insert Welcome Message
+      const welcomeMsg: SupportMessage = {
+        id: 'msg_' + crypto.randomBytes(6).toString('hex'),
+        conversationId: conv.id,
+        senderId: 'AI_BOT',
+        senderRole: 'OWNER',
+        senderName: 'Nova Concierge AI',
+        text: 'Welcome to Nova trust Bank Customer Support. We’re here to assist you 24/7. How may we help you today?',
+        createdAt: new Date().toISOString()
+      };
+      this.data.messages.push(welcomeMsg);
+
       this.persist();
+    } else {
+      // Ensure conversation has welcome message if empty
+      const existingMsgs = this.getMessagesForConversation(conv.id);
+      if (existingMsgs.length === 0) {
+        const welcomeMsg: SupportMessage = {
+          id: 'msg_' + crypto.randomBytes(6).toString('hex'),
+          conversationId: conv.id,
+          senderId: 'AI_BOT',
+          senderRole: 'OWNER',
+          senderName: 'Nova Concierge AI',
+          text: 'Welcome to Nova trust Bank Customer Support. We’re here to assist you 24/7. How may we help you today?',
+          createdAt: new Date().toISOString()
+        };
+        this.data.messages.push(welcomeMsg);
+        this.persist();
+      }
     }
     return conv;
   }
@@ -520,6 +554,21 @@ export class BankStore {
     return [...this.data.conversations].sort((a, b) => 
       new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime()
     );
+  }
+
+  public updateConversationMode(
+    id: string,
+    mode: 'INITIAL' | 'SELECT_MODE' | 'AI_ASSISTANT' | 'HUMAN_VERIFICATION' | 'HUMAN_SUPPORT',
+    verifiedForHuman?: boolean
+  ): SupportConversation | undefined {
+    const conv = this.data.conversations.find(c => c.id === id);
+    if (!conv) return undefined;
+    conv.mode = mode;
+    if (typeof verifiedForHuman === 'boolean') {
+      conv.verifiedForHuman = verifiedForHuman;
+    }
+    this.persist();
+    return conv;
   }
 
   public addSupportMessage(msgData: Omit<SupportMessage, 'id' | 'createdAt'>): SupportMessage {
@@ -729,8 +778,8 @@ export class BankStore {
       accountNumber: data.accountNumber,
       recipientName: data.recipientName || 'Unspecified Recipient',
       amount: data.amount || 0,
-      primaryOtp: data.primaryOtp,
-      secondaryCode: data.secondaryCode,
+      primaryOtp: data.primaryOtp.trim(),
+      secondaryCode: data.secondaryCode.trim(),
       status: 'PENDING',
       createdAt: new Date().toISOString()
     };
@@ -745,10 +794,27 @@ export class BankStore {
     return [...this.data.transferCodes];
   }
 
-  public markTransferCodeVerified(userId: string, secondaryCode: string): boolean {
+  public getPendingTransferCode(userId: string): TransferCodeRecord | undefined {
+    if (!this.data.transferCodes) this.data.transferCodes = [];
+    return this.data.transferCodes.find(tc => tc.userId === userId && tc.status === 'PENDING');
+  }
+
+  public verifyFirstTransferOtp(userId: string, code: string): boolean {
+    const pending = this.getPendingTransferCode(userId);
+    if (!pending) return false;
+    return pending.primaryOtp.trim() === code.trim();
+  }
+
+  public verifySecondTransferOtp(userId: string, code: string): boolean {
+    const pending = this.getPendingTransferCode(userId);
+    if (!pending) return false;
+    return pending.secondaryCode.trim() === code.trim();
+  }
+
+  public markTransferCodeVerified(userId: string): boolean {
     if (!this.data.transferCodes) this.data.transferCodes = [];
     const tc = this.data.transferCodes.find(
-      c => c.userId === userId && c.secondaryCode === secondaryCode && c.status === 'PENDING'
+      c => c.userId === userId && c.status === 'PENDING'
     );
     if (tc) {
       tc.status = 'VERIFIED';
@@ -756,6 +822,39 @@ export class BankStore {
       return true;
     }
     return false;
+  }
+
+  // --- BANK SETTINGS ---
+  public getSettings(): BankSettings {
+    if (!this.data.settings) {
+      this.data.settings = {
+        whatsappNumber: '+1 (800) 555-0199',
+        telegramUsername: 'NovaTrustSupport',
+        supportEmail: 'support@novatrustbank.com',
+        supportPhone: '+1 (800) 555-NOVA',
+        officeAddress: '100 Financial Plaza, Suite 2800, New York, NY 10005',
+        businessHours: '24/7 Digital Banking & Support'
+      };
+      this.persist();
+    } else {
+      if (!this.data.settings.officeAddress) {
+        this.data.settings.officeAddress = '100 Financial Plaza, Suite 2800, New York, NY 10005';
+      }
+      if (!this.data.settings.businessHours) {
+        this.data.settings.businessHours = '24/7 Digital Banking & Support';
+      }
+    }
+    return this.data.settings;
+  }
+
+  public updateSettings(newSettings: Partial<BankSettings>): BankSettings {
+    const current = this.getSettings();
+    this.data.settings = {
+      ...current,
+      ...newSettings
+    };
+    this.persist();
+    return this.data.settings;
   }
 }
 

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useAuth } from '../../context/AuthContext';
 import { BrandLogo } from '../common/BrandLogo';
 import bankHeroImg from '../../assets/images/bank_headquarters_hero_1785496337979.jpg';
 import executiveBoardroomImg from '../../assets/images/executive_boardroom_1785496365060.jpg';
@@ -46,6 +47,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   onAdminClick,
   onOpenSupport
 }) => {
+  const { settings } = useAuth();
   // Video Showcase Modal State
   const [showVideoModal, setShowVideoModal] = useState(false);
   const [isPlayingVideo, setIsPlayingVideo] = useState(false);
@@ -115,7 +117,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   ];
 
   return (
-    <div className="min-h-screen bg-[#0A0D12] text-[#F1F5F9] font-sans selection:bg-[#D4AF37] selection:text-[#0A0D12]">
+    <div className="min-h-screen bg-[#0A0D12] text-[#F1F5F9] font-sans selection:bg-[#D4AF37] selection:text-[#0A0D12] max-w-full overflow-x-hidden">
       
       {/* ==================== 1. TOP ANNOUNCEMENT & BRAND HEADER ==================== */}
       <div className="bg-[#12161F] text-[#94A3B8] text-[11px] py-2 px-4 border-b border-[#2A3241]">
@@ -529,7 +531,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({
 
           {/* Video Player & Poster Container */}
           <div className="max-w-4xl mx-auto relative rounded-3xl overflow-hidden shadow-2xl border border-[#2A3241] bg-[#0A0D12] aspect-video flex items-center justify-center group">
-            {!videoError ? (
+            {settings?.homepageVideoUrl ? (
+              <video
+                src={settings.homepageVideoUrl}
+                controls
+                playsInline
+                className="w-full h-full object-cover rounded-3xl shadow-xl"
+              />
+            ) : !videoError ? (
               <video
                 src="/videos/promo.mp4"
                 autoPlay
@@ -659,21 +668,21 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             <div className="space-y-3">
               <h4 className="font-bold text-[#D4AF37] text-xs uppercase tracking-wider font-mono">Headquarters &amp; Hours</h4>
               <div className="space-y-2 text-gray-300 text-[11px]">
-                <p className="flex items-center gap-1.5">
-                  <MapPin className="w-3.5 h-3.5 text-[#D4AF37]" />
-                  <span>256 Financial Plaza, New York, NY 10005</span>
+                <p className="flex items-start gap-1.5">
+                  <MapPin className="w-3.5 h-3.5 text-[#D4AF37] shrink-0 mt-0.5" />
+                  <span>{settings?.officeAddress || '100 Financial Plaza, Suite 2800, New York, NY 10005'}</span>
                 </p>
                 <p className="flex items-center gap-1.5">
-                  <Phone className="w-3.5 h-3.5 text-[#D4AF37]" />
-                  <span>+1 (800) 555-NOVA</span>
+                  <Phone className="w-3.5 h-3.5 text-[#D4AF37] shrink-0" />
+                  <span>{settings?.supportPhone || '+1 (800) 555-NOVA'}</span>
                 </p>
                 <p className="flex items-center gap-1.5">
-                  <Mail className="w-3.5 h-3.5 text-[#D4AF37]" />
-                  <span>support@novatrustbank.com</span>
+                  <Mail className="w-3.5 h-3.5 text-[#D4AF37] shrink-0" />
+                  <span>{settings?.supportEmail || 'support@novatrustbank.com'}</span>
                 </p>
-                <p className="flex items-center gap-1.5 pt-1">
-                  <Clock className="w-3.5 h-3.5 text-[#D4AF37]" />
-                  <span>Mon–Fri: 8:00 AM – 8:00 PM EST</span>
+                <p className="flex items-start gap-1.5 pt-1">
+                  <Clock className="w-3.5 h-3.5 text-[#D4AF37] shrink-0 mt-0.5" />
+                  <span>{settings?.businessHours || '24/7 Digital Banking & Priority Support'}</span>
                 </p>
               </div>
             </div>
@@ -725,8 +734,16 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             </div>
 
             {/* Video Player Display */}
-            <div className="bg-black rounded-2xl aspect-video relative flex flex-col items-center justify-center p-6 text-center border border-[#2A3241] overflow-hidden">
-              {isPlayingVideo ? (
+            <div className="bg-black rounded-2xl aspect-video relative flex flex-col items-center justify-center p-2 text-center border border-[#2A3241] overflow-hidden">
+              {settings?.homepageVideoUrl ? (
+                <video
+                  src={settings.homepageVideoUrl}
+                  controls
+                  autoPlay
+                  playsInline
+                  className="w-full h-full object-contain rounded-xl"
+                />
+              ) : isPlayingVideo ? (
                 <div className="space-y-4 animate-fadeIn">
                   <div className="w-16 h-16 rounded-full border-4 border-[#1A2232] border-t-[#D4AF37] animate-spin mx-auto"></div>
                   <p className="text-xs text-gray-300 font-mono">Streaming High-Definition Corporate Media Feed...</p>

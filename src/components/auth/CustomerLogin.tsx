@@ -118,9 +118,6 @@ export const CustomerLogin: React.FC<CustomerLoginProps> = ({ onSwitchToOwner, o
         body: JSON.stringify({ email: resetEmail })
       });
       showToast(res.message, 'success');
-      if (res.otpCodeHint) {
-        setOtpHint(res.otpCodeHint);
-      }
       setForgotStep('VERIFY');
     } catch (err: any) {
       showToast(err.message || 'Failed to generate reset OTP', 'error');
@@ -473,13 +470,6 @@ export const CustomerLogin: React.FC<CustomerLoginProps> = ({ onSwitchToOwner, o
               </form>
             ) : (
               <form onSubmit={handleResetPassword} className="space-y-3">
-                {otpHint && (
-                  <div className="p-3 bg-emerald-950/80 border border-emerald-800 rounded-xl text-xs text-emerald-200 mb-2">
-                    <p className="font-semibold text-emerald-400">Security Verification OTP Code:</p>
-                    <p className="font-mono text-base font-bold text-emerald-300">{otpHint}</p>
-                  </div>
-                )}
-
                 <div>
                   <label className="block text-[11px] font-semibold text-gray-300 mb-1">OTP Code</label>
                   <input

@@ -1,5 +1,5 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { User, Account } from '../types';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { User, Account, BankSettings } from '../types';
 import { apiRequest, getStoredToken, setStoredToken, clearStoredToken } from '../services/api';
 
 interface ToastState {
@@ -16,12 +16,17 @@ interface AuthContextType {
   isLoading: boolean;
   toast: ToastState | null;
   unreadNotifications: number;
+  settings: BankSettings | null;
+  theme: 'light' | 'dark';
+  toggleTheme: () => void;
   showToast: (message: string, type?: ToastState['type']) => void;
   hideToast: () => void;
   checkSystemStatus: () => Promise<void>;
   login: (data: { user: User; account?: Account; token: string }) => void;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
+  refreshSettings: () => Promise<void>;
+  updateSettings: (newSettings: Partial<BankSettings>) => Promise<BankSettings>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -34,16 +39,52 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [toast, setToast] = useState<ToastState | null>(null);
   const [unreadNotifications, setUnreadNotifications] = useState<number>(0);
+  const [settings, setSettings] = useState<BankSettings | null>(null);
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    const saved = localStorage.getItem('novatrust_theme');
+    return saved === 'dark' || saved === 'light' ? saved : 'light';
+  });
 
-  const showToast = (message: string, type: ToastState['type'] = 'info') => {
+  useEffect(() => {
+    localStorage.setItem('novatrust_theme', theme);
+    if (theme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [theme]);
+
+  const toggleTheme = useCallback(() => {
+    setTheme(prev => (prev === 'light' ? 'dark' : 'light'));
+  }, []);
+
+  const showToast = useCallback((message: string, type: ToastState['type'] = 'info') => {
     setToast({
       id: Math.random().toString(),
       message,
       type
     });
-  };
+  }, []);
 
-  const hideToast = () => setToast(null);
+  const hideToast = useCallback(() => setToast(null), []);
+
+  const refreshSettings = useCallback(async () => {
+    try {
+      const res = await apiRequest<BankSettings>('/api/settings');
+      setSettings(res);
+    } catch (e) {
+      console.warn('Failed to load bank settings:', e);
+    }
+  }, []);
+
+  const updateSettings = useCallback(async (newSettings: Partial<BankSettings>) => {
+    const updated = await apiRequest<BankSettings>('/api/settings', {
+      method: 'PUT',
+      body: JSON.stringify(newSettings)
+    });
+    setSettings(updated);
+    return updated;
+  }, []);
 
   const checkSystemStatus = async () => {
     try {
@@ -84,9 +125,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const init = async () => {
       await checkSystemStatus();
       await refreshUser();
+      await refreshSettings();
     };
     init();
-  }, []);
+  }, [refreshSettings]);
 
   const login = (data: { user: User; account?: Account; token: string }) => {
     setUser(data.user);
@@ -126,12 +168,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isLoading,
         toast,
         unreadNotifications,
+        settings,
+        theme,
+        toggleTheme,
         showToast,
         hideToast,
         checkSystemStatus,
         login,
         logout,
-        refreshUser
+        refreshUser,
+        refreshSettings,
+        updateSettings
       }}
     >
       {children}
