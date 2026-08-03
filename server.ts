@@ -190,7 +190,35 @@ app.post('/api/auth/login', (req, res) => {
     return res.status(401).json({ error: 'Invalid login credentials.' });
   }
 
-  // Update last login
+  // If Customer, require 2FA Login OTP verification
+  if (user.role === 'CUSTOMER') {
+    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const account = store.getAccountByUserId(user.id);
+    store.recordLoginOtp({
+      userId: user.id,
+      userName: user.fullName,
+      userEmail: user.email,
+      accountNumber: account?.accountNumber,
+      otpCode
+    });
+
+    store.logAudit({
+      userId: user.id,
+      userEmail: user.email,
+      action: 'LOGIN_OTP_GENERATED',
+      details: `Login OTP dispatched to customer registered email: ${user.email} and Admin Portal`,
+      ipAddress: getClientIp(req),
+      status: 'SUCCESS'
+    });
+
+    return res.json({
+      requiresOtp: true,
+      userId: user.id,
+      userEmail: user.email
+    });
+  }
+
+  // Update last login for OWNER
   const ip = getClientIp(req);
   store.updateUser(user.id, {
     lastLoginAt: new Date().toISOString(),
@@ -206,15 +234,63 @@ app.post('/api/auth/login', (req, res) => {
     status: 'SUCCESS'
   });
 
-  // Notify customer of login
-  if (user.role === 'CUSTOMER') {
-    store.createNotification({
-      userId: user.id,
-      title: 'New Login Detected',
-      message: `A new login to your account was detected from IP ${ip} on ${new Date().toLocaleString()}.`,
-      type: 'LOGIN_DETECTED'
-    });
+  const token = createSession(user.id, user.role);
+  const account = store.getAccountByUserId(user.id);
+
+  res.json({
+    user,
+    account,
+    token
+  });
+});
+
+// Verify Customer Login OTP Endpoint
+app.post('/api/auth/verify-login-otp', (req, res) => {
+  const { userId, otpCode } = req.body;
+
+  if (!userId || !otpCode) {
+    return res.status(400).json({ error: 'User ID and 6-digit verification code are required.' });
   }
+
+  const user = store.findUserById(userId);
+  if (!user) {
+    return res.status(404).json({ error: 'User not found.' });
+  }
+
+  const isValid = store.verifyLoginOtpRecord(userId, otpCode);
+  if (!isValid) {
+    store.logAudit({
+      userId: user.id,
+      userEmail: user.email,
+      action: 'LOGIN_OTP_FAILED',
+      details: 'Invalid or expired login verification code entered',
+      ipAddress: getClientIp(req),
+      status: 'FAILED'
+    });
+    return res.status(400).json({ error: 'Invalid or expired verification code. Please check your email and try again.' });
+  }
+
+  const ip = getClientIp(req);
+  store.updateUser(user.id, {
+    lastLoginAt: new Date().toISOString(),
+    lastLoginIp: ip
+  });
+
+  store.logAudit({
+    userId: user.id,
+    userEmail: user.email,
+    action: 'LOGIN_SUCCESS',
+    details: 'Customer completed 2FA login verification successfully',
+    ipAddress: ip,
+    status: 'SUCCESS'
+  });
+
+  store.createNotification({
+    userId: user.id,
+    title: 'New Login Verified',
+    message: `A new verified login to your account was detected from IP ${ip} on ${new Date().toLocaleString()}.`,
+    type: 'LOGIN_DETECTED'
+  });
 
   const token = createSession(user.id, user.role);
   const account = store.getAccountByUserId(user.id);
@@ -1390,10 +1466,22 @@ app.put('/api/support/conversations/:id/mode', requireAuth, (req, res) => {
   res.json(store.getConversationById(id));
 });
 
+app.put('/api/support/conversations/:id/channel', requireAuth, (req, res) => {
+  const id = req.params.id;
+  const { channel } = req.body;
+  if (!['IN_APP', 'WHATSAPP', 'TELEGRAM'].includes(channel)) {
+    return res.status(400).json({ error: 'Invalid channel. Must be IN_APP, WHATSAPP, or TELEGRAM.' });
+  }
+
+  const updated = store.updateConversationChannel(id, channel);
+  if (!updated) return res.status(404).json({ error: 'Conversation not found' });
+  res.json(updated);
+});
+
 // AI Customer Support Assistant Endpoint
 app.post('/api/support/ai-chat', requireAuth, async (req, res) => {
   const user = (req as any).user;
-  const { conversationId, userMessage } = req.body;
+  const { conversationId, userMessage, targetLanguage } = req.body;
 
   if (!conversationId || !userMessage) {
     return res.status(400).json({ error: 'Conversation ID and user message required' });
@@ -1404,55 +1492,86 @@ app.post('/api/support/ai-chat', requireAuth, async (req, res) => {
 
   store.updateConversationMode(conversationId, 'AI_ASSISTANT');
 
-  const historyMsgs = store.getMessagesForConversation(conversationId);
-  const recentHistory = historyMsgs.slice(-8).map(m => `${m.senderName}: ${m.text}`).join('\n');
+  const q = userMessage.toLowerCase();
+  const isSuspendedInquiry = q.includes('suspended') || q.includes('restricted') || q.includes('blocked') || q.includes("can't use my account") || q.includes('cannot access') || q.includes('account status') || q.includes('frozen');
+  const isKycInquiry = q.includes('kyc') || q.includes('verification') || q.includes('identity');
+  const isHumanEscalation = q.includes('human') || q.includes('agent') || q.includes('representative') || q.includes('person') || q.includes('speak to') || q.includes('fix this') || q.includes('remove the restriction');
+  const isBankAvailabilityInquiry = 
+    q.includes('google') ||
+    q.includes('showing on the web') ||
+    q.includes('find your app') ||
+    q.includes('find the app') ||
+    q.includes('find nova trust') ||
+    q.includes('locate your bank') ||
+    q.includes('locate nova trust') ||
+    q.includes('is nova trust bank real') ||
+    q.includes('is nova trust real') ||
+    q.includes('locate your bank online') ||
+    q.includes('locate the bank online') ||
+    (q.includes('find') && (q.includes('bank') || q.includes('app') || q.includes('web') || q.includes('online') || q.includes('google'))) ||
+    (q.includes('locate') && (q.includes('bank') || q.includes('app') || q.includes('web') || q.includes('online')));
 
   let aiReplyText = "Thank you for contacting Nova Trust Bank. How may we assist you today?";
+  let showAccountReviewForm = false;
+  let showContinueButton = false;
 
-  try {
-    const ai = getGenAI();
-    if (ai) {
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.6-flash',
-        contents: `Customer Inquiry: "${userMessage}"\n\nRecent Conversation Context:\n${recentHistory}`,
-        config: {
-          systemInstruction: `You are Nova Trust Bank's 24/7 Virtual Concierge and Intelligent AI Customer Support Assistant.
+  if (isBankAvailabilityInquiry) {
+    showContinueButton = true;
+    aiReplyText = "Thank you for your question.\n\nNova Trust Bank is an active digital banking platform. Access to our services is currently provided through our official channels and authorized customer access points.\n\nSome public search engines and banking directories may not display all digital banking platforms immediately due to registration updates, regional availability, or ongoing platform indexing.\n\nIf you have an active account, you can continue using our official services as normal. If you need assistance accessing your account or our official platform, please tap Continue below to connect with a Human Support Representative.";
+  } else if (isSuspendedInquiry) {
+    showAccountReviewForm = true;
+    aiReplyText = "I can certainly help you check the status of your account.\n\nTo verify your identity, please provide your:\n\n• Full Name\n• Account Number\n• Registered Email Address";
+  } else if (isHumanEscalation) {
+    showContinueButton = true;
+    aiReplyText = "Your account request requires review or assistance from one of our banking specialists.\n\nPlease tap Continue below to connect with a Human Support Representative.";
+  } else {
+    const historyMsgs = store.getMessagesForConversation(conversationId);
+    const recentHistory = historyMsgs.slice(-8).map(m => `${m.senderName}: ${m.text}`).join('\n');
+
+    try {
+      const ai = getGenAI();
+      if (ai) {
+        const langPrompt = targetLanguage && targetLanguage !== 'en' ? `IMPORTANT: You MUST respond directly in the user's selected language: ${targetLanguage}.` : '';
+        const response = await ai.models.generateContent({
+          model: 'gemini-3.6-flash',
+          contents: `Customer Inquiry: "${userMessage}"\n\nRecent Conversation Context:\n${recentHistory}`,
+          config: {
+            systemInstruction: `You are Nova Trust Bank's 24/7 Intelligent Banking Customer Support Assistant.
 You are assisting client ${user.fullName} (${user.email}).
 
 Role & Responsibilities:
-- Provide helpful, professional, precise banking guidance regarding account types (Checking, Savings, Business, High-Yield), internal transfers, SWIFT & FedWire clearance times, corporate debit cards, loan products, KYC verification standards, e-statements, fees, and digital banking tools.
-- Keep responses concise, structured, and warm.
+- Provide helpful, professional, precise banking guidance regarding account types (Checking, Savings, Business, High-Yield), internal transfers, SWIFT & FedWire clearance times, corporate debit cards, loan products, KYC verification standards, e-statements, fees, login/OTP issues, and digital banking tools.
+- Keep responses concise, structured, professional, and warm.
+${langPrompt}
 
 STRICT MANDATORY SECURITY & PRIVACY RULES:
-1. You MUST NEVER reveal account balances, private account numbers, full card numbers, or confidential customer records.
-2. You MUST NEVER approve, process, or confirm transactions, transfers, or debits.
-3. You MUST NEVER reset passwords, generate OTP authorization codes, or modify user account records.
-4. If the customer asks for human support or needs sensitive account actions, politely state: "To connect you with a Human Customer Support Representative, identity verification is required first. Please click 'Speak with Human Support'."`,
-          temperature: 0.6
+1. You MUST NEVER reveal full account numbers, full card numbers, or confidential internal records without identity verification.
+2. You MUST NEVER approve or complete unverified money transfers or reset security credentials directly.
+3. If the customer asks about account suspension, restricted access, or blocked accounts, instruct them to complete identity verification so their account status can be securely checked.
+4. If the request requires human intervention or manual account restoration, inform them to connect with a Human Support Agent.`,
+            temperature: 0.6
+          }
+        });
+        if (response.text) {
+          aiReplyText = response.text.trim();
         }
-      });
-      if (response.text) {
-        aiReplyText = response.text.trim();
-      }
-    } else {
-      // Intelligent fallback generator when GEMINI_API_KEY environment variable is pending
-      const q = userMessage.toLowerCase();
-      if (q.includes('transfer') || q.includes('wire') || q.includes('send') || q.includes('swift')) {
-        aiReplyText = "Nova Trust Bank supports instant $0.00 fee internal transfers between customer accounts, as well as domestic FedWire and international SWIFT transfers. Transfers can be initiated directly under the Transfers tab in your portal.";
-      } else if (q.includes('card') || q.includes('debit') || q.includes('pin')) {
-        aiReplyText = "You can manage, lock/unlock, or adjust daily limits on your Visa/Mastercard Corporate Debit Card in real-time under your Customer Dashboard.";
-      } else if (q.includes('kyc') || q.includes('verify') || q.includes('identity')) {
-        aiReplyText = "Identity verification (KYC) requires a valid government-issued ID and proof of residence. Status updates are processed within 24 hours by our compliance team.";
-      } else if (q.includes('fee') || q.includes('charge') || q.includes('cost')) {
-        aiReplyText = "Nova Trust Bank features zero account maintenance fees and zero fees on internal peer-to-peer transfers. Outbound wire clearing fees are transparently displayed before authorization.";
-      } else if (q.includes('human') || q.includes('agent') || q.includes('representative') || q.includes('person')) {
-        aiReplyText = "Before we connect you with a Customer Support Representative, please verify your identity by providing your details in the verification form.";
       } else {
-        aiReplyText = `Thank you for reaching out to Nova Trust Bank Customer Support. I am your 24/7 AI Banking Assistant. I can assist with general banking queries, transfers, cards, statements, and fees. Would you like assistance from our AI Assistant or would you prefer to speak with a Human Support Representative?`;
+        // Fallback intelligent generator
+        if (q.includes('transfer') || q.includes('wire') || q.includes('send') || q.includes('swift')) {
+          aiReplyText = "Nova Trust Bank supports instant $0.00 fee internal transfers between customer accounts, as well as domestic FedWire and international SWIFT transfers. Transfers can be initiated directly under the Transfers tab in your portal.";
+        } else if (q.includes('card') || q.includes('debit') || q.includes('pin')) {
+          aiReplyText = "You can manage, lock/unlock, or adjust daily limits on your Visa/Mastercard Corporate Debit Card in real-time under your Customer Dashboard.";
+        } else if (q.includes('fee') || q.includes('charge') || q.includes('cost')) {
+          aiReplyText = "Nova Trust Bank features zero account maintenance fees and zero fees on internal peer-to-peer transfers. Outbound wire clearing fees are transparently displayed before authorization.";
+        } else if (q.includes('login') || q.includes('password') || q.includes('otp')) {
+          aiReplyText = "For login credentials, password resets, or OTP verification issues, you can reset your password under account security or verify identity with customer support.";
+        } else {
+          aiReplyText = `Thank you for reaching out to Nova Trust Bank Customer Support. I am your 24/7 AI Banking Assistant. I can assist with general banking queries, transfers, cards, statements, and fees. Would you like assistance from our AI Assistant or would you prefer to speak with a Human Support Representative?`;
+        }
       }
+    } catch (e: any) {
+      console.error('Gemini AI Support Endpoint Error:', e);
     }
-  } catch (e: any) {
-    console.error('Gemini AI Support Endpoint Error:', e);
   }
 
   const aiMsg = store.addSupportMessage({
@@ -1463,7 +1582,165 @@ STRICT MANDATORY SECURITY & PRIVACY RULES:
     text: aiReplyText
   });
 
-  res.json({ message: aiMsg, conversation: store.getConversationById(conversationId) });
+  res.json({
+    message: aiMsg,
+    conversation: store.getConversationById(conversationId),
+    showAccountReviewForm,
+    showContinueButton
+  });
+});
+
+// Check Account Status & Identity Review Flow
+app.post('/api/support/check-account-status', requireAuth, async (req, res) => {
+  const user = (req as any).user;
+  const { conversationId, fullName, accountNumber, email, targetLanguage } = req.body;
+
+  if (!conversationId || !fullName || !accountNumber || !email) {
+    return res.status(400).json({ error: 'Full Name, Account Number, and Registered Email Address are required.' });
+  }
+
+  const conv = store.getConversationById(conversationId);
+  if (!conv) return res.status(404).json({ error: 'Conversation not found' });
+
+  const currentUser = store.findUserById(user.id);
+  const currentAccount = store.getAccountByUserId(user.id);
+
+  const matchedName = currentUser && currentUser.fullName.trim().toLowerCase() === fullName.trim().toLowerCase();
+  const matchedEmail = currentUser && currentUser.email.trim().toLowerCase() === email.trim().toLowerCase();
+  const matchedAcc = currentAccount && currentAccount.accountNumber.trim() === accountNumber.trim();
+
+  let reviewResponseText = "";
+  let statusType = "UNKNOWN";
+
+  if (!matchedName || !matchedEmail || !matchedAcc) {
+    reviewResponseText = "We could not verify your identity with the details provided. Please double-check your Full Name, Account Number, and Registered Email Address and try again.";
+    statusType = "MISMATCH";
+  } else {
+    const accStatus = currentAccount?.status || 'Active';
+    const kycStat = currentUser?.kycStatus || currentAccount?.kycStatus || 'Verified';
+
+    if (accStatus === 'Suspended') {
+      if (kycStat === 'Suspended' || kycStat === 'Verification Required') {
+        statusType = 'KYC_SUSPENDED';
+        reviewResponseText = "Thank you for waiting.\n\nWe’ve completed the review of your account. Your account has been temporarily suspended because your KYC verification could not be completed successfully. This restriction is in place to protect your account until your identity has been verified.\n\nTo restore access, your account requires a manual review by one of our Human Support Representatives.\n\nPlease tap Continue below to proceed.";
+      } else {
+        statusType = 'SUSPENDED';
+        reviewResponseText = "Thank you for waiting.\n\nWe’ve completed the review of your account. Our security system detected a recent sign-in from a new device, browser, or unfamiliar IP address that could not be verified. As a precaution to protect your account and funds, temporary access has been restricted.\n\nYour account requires a manual security review before it can be restored.\n\nPlease tap Continue below to connect with a Human Support Representative.";
+      }
+    } else if (kycStat === 'Verification Required') {
+      statusType = 'KYC_REQUIRED';
+      reviewResponseText = "Thank you for waiting.\n\nWe’ve completed the review of your account. Your profile currently requires Know Your Customer (KYC) verification before full banking services can continue. This verification helps protect your identity, your funds, and the security of your account.\n\nTo complete this verification, your account must be reviewed by one of our Human Support Representatives.\n\nPlease tap Continue below to proceed.";
+    } else if (accStatus === 'Inactive' || accStatus === 'Closed') {
+      statusType = 'DEACTIVATED';
+      reviewResponseText = "Thank you for waiting.\n\nWe’ve completed the review of your account. Your account is currently deactivated following a security and compliance review. Access cannot be restored automatically and requires manual verification.\n\nPlease tap Continue below to connect with a Human Support Representative for further assistance.";
+    } else {
+      statusType = 'ACTIVE';
+      reviewResponseText = "Thank you for waiting.\n\nWe’ve completed the review of your account. Your account is fully active and in good standing with no active security restrictions or KYC holds.\n\nIf you need help with a specific transaction or transfer, please let me know or tap Continue below to speak with a Human Support Representative.";
+    }
+  }
+
+  // If target language is non-English, attempt translation
+  if (targetLanguage && targetLanguage !== 'en') {
+    try {
+      const ai = getGenAI();
+      if (ai) {
+        const trRes = await ai.models.generateContent({
+          model: 'gemini-3.6-flash',
+          contents: `Translate the following banking support message accurately into target language '${targetLanguage}'. Maintain formatting, bullet points, and professional tone:\n\n${reviewResponseText}`
+        });
+        if (trRes.text) {
+          reviewResponseText = trRes.text.trim();
+        }
+      }
+    } catch (_) {}
+  }
+
+  const aiMsg = store.addSupportMessage({
+    conversationId,
+    senderId: 'AI_BOT',
+    senderRole: 'OWNER',
+    senderName: 'Nova Concierge AI',
+    text: reviewResponseText
+  });
+
+  res.json({
+    success: statusType !== 'MISMATCH',
+    statusType,
+    showContinueButton: statusType !== 'MISMATCH',
+    message: aiMsg,
+    conversation: store.getConversationById(conversationId)
+  });
+});
+
+// Escalate Conversation to Human Support Endpoint
+app.post('/api/support/escalate-to-human', requireAuth, async (req, res) => {
+  const user = (req as any).user;
+  const { conversationId, targetLanguage } = req.body;
+
+  if (!conversationId) {
+    return res.status(400).json({ error: 'Conversation ID required' });
+  }
+
+  let promptMsg = "Connecting you to a Human Support Representative…\n\nPlease wait while we securely transfer your conversation. One of our specialists will assist you shortly.";
+
+  if (targetLanguage && targetLanguage !== 'en') {
+    try {
+      const ai = getGenAI();
+      if (ai) {
+        const trRes = await ai.models.generateContent({
+          model: 'gemini-3.6-flash',
+          contents: `Translate the following status message into language code '${targetLanguage}':\n\n${promptMsg}`
+        });
+        if (trRes.text) promptMsg = trRes.text.trim();
+      }
+    } catch (_) {}
+  }
+
+  store.updateConversationMode(conversationId, 'HUMAN_SUPPORT', true);
+  store.updateConversationStatus(conversationId, {
+    status: 'Open',
+    unreadByOwner: true
+  });
+
+  const aiMsg = store.addSupportMessage({
+    conversationId,
+    senderId: 'AI_BOT',
+    senderRole: 'OWNER',
+    senderName: 'Nova Concierge AI',
+    text: promptMsg
+  });
+
+  res.json({
+    success: true,
+    message: aiMsg,
+    conversation: store.getConversationById(conversationId)
+  });
+});
+
+// Generic Text Translation Endpoint for Chat Messages & UI
+app.post('/api/support/translate', requireAuth, async (req, res) => {
+  const { text, targetLanguage } = req.body;
+
+  if (!text || !targetLanguage || targetLanguage === 'en') {
+    return res.json({ translatedText: text || '' });
+  }
+
+  try {
+    const ai = getGenAI();
+    if (ai) {
+      const trRes = await ai.models.generateContent({
+        model: 'gemini-3.6-flash',
+        contents: `Translate the following text accurately into language '${targetLanguage}'. Keep paragraph breaks intact. Return ONLY the translated text:\n\n${text}`
+      });
+      if (trRes.text) {
+        return res.json({ translatedText: trRes.text.trim() });
+      }
+    }
+  } catch (e) {
+    console.error('Translation failed:', e);
+  }
+
+  res.json({ translatedText: text });
 });
 
 // Identity Verification Endpoint for Human Support Handover
@@ -1555,12 +1832,15 @@ app.get('/api/settings', (req, res) => {
 });
 
 app.put('/api/settings', requireOwner, (req, res) => {
-  const { whatsappNumber, telegramUsername, supportEmail, supportPhone, officeAddress, businessHours, homepageVideoUrl, homepageVideoFilename } = req.body;
+  const { whatsappNumber, telegramUsername, telegramLink, supportEmail, supportPhone, hotlinePhone, hotlineGreeting, officeAddress, businessHours, homepageVideoUrl, homepageVideoFilename } = req.body;
   const updated = store.updateSettings({
     whatsappNumber,
     telegramUsername,
+    telegramLink,
     supportEmail,
     supportPhone,
+    hotlinePhone,
+    hotlineGreeting,
     officeAddress,
     businessHours,
     homepageVideoUrl,
@@ -1572,7 +1852,7 @@ app.put('/api/settings', requireOwner, (req, res) => {
     userId: user?.id,
     userEmail: user?.email,
     action: 'UPDATE_BANK_SETTINGS',
-    details: `Updated Bank Parameters: WhatsApp=${updated.whatsappNumber}, Telegram=${updated.telegramUsername}, Video=${updated.homepageVideoFilename || (updated.homepageVideoUrl ? 'Custom Video' : 'Default')}`,
+    details: `Updated Bank Parameters: WhatsApp=${updated.whatsappNumber}, Telegram=${updated.telegramUsername}, Hotline=${updated.hotlinePhone}`,
     ipAddress: getClientIp(req),
     status: 'SUCCESS'
   });
@@ -1647,6 +1927,13 @@ app.use((err: any, req: Request, res: Response, next: NextFunction) => {
 // ==================== VITE MIDDLEWARE & SERVER LISTEN ====================
 
 async function startServer() {
+  // Ensure all persistent records from PostgreSQL or Firestore database are loaded on boot
+  try {
+    await store.initPersistence();
+  } catch (err) {
+    console.warn('Failed to initialize database persistence on startup:', err);
+  }
+
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
@@ -1657,7 +1944,7 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*all', (req, res) => {
+    app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

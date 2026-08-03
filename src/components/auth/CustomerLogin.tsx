@@ -32,11 +32,21 @@ export const CustomerLogin: React.FC<CustomerLoginProps> = ({ onSwitchToOwner, o
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
 
+  const maskEmail = (emailStr?: string) => {
+    if (!emailStr || !emailStr.includes('@')) return 'your registered email address';
+    const [name, domain] = emailStr.split('@');
+    if (name.length <= 2) return `${name[0]}*@${domain}`;
+    const firstTwo = name.slice(0, 2);
+    const lastOne = name.slice(-1);
+    const asterisks = '*'.repeat(Math.max(3, name.length - 3));
+    return `${firstTwo}${asterisks}${lastOne}@${domain}`;
+  };
+
   // Verification code state
   const [pendingAuthResponse, setPendingAuthResponse] = useState<any>(null);
-  const [generatedCode, setGeneratedCode] = useState<string>('');
   const [enteredCode, setEnteredCode] = useState<string>('');
   const [codeError, setCodeError] = useState<string | null>(null);
+  const [isVerifyingCode, setIsVerifyingCode] = useState<boolean>(false);
 
   // Forgot password flow states
   const [showForgotModal, setShowForgotModal] = useState(false);
@@ -47,9 +57,10 @@ export const CustomerLogin: React.FC<CustomerLoginProps> = ({ onSwitchToOwner, o
   const [forgotStep, setForgotStep] = useState<'REQUEST' | 'VERIFY'>('REQUEST');
   const [isSendingOtp, setIsSendingOtp] = useState(false);
 
-  // Form Submit: Validate Credentials -> Show Spinner -> Generate Code
+  // Form Submit: Validate Credentials -> Show Spinner -> Transition to Code Verification
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     setLoginError(null);
 
     if (!identifier.trim() || !password) {
@@ -78,9 +89,6 @@ export const CustomerLogin: React.FC<CustomerLoginProps> = ({ onSwitchToOwner, o
       setIsSubmitting(false);
 
       setTimeout(() => {
-        // 3. Generate 6-digit Login Verification Code displayed at top of verification page
-        const code = Math.floor(100000 + Math.random() * 900000).toString();
-        setGeneratedCode(code);
         setStep('CODE_VERIFICATION');
       }, 3500);
 
@@ -92,18 +100,39 @@ export const CustomerLogin: React.FC<CustomerLoginProps> = ({ onSwitchToOwner, o
   };
 
   // Code Verification Submit
-  const handleVerifyCodeSubmit = (e: React.FormEvent) => {
+  const handleVerifyCodeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isVerifyingCode) return;
     setCodeError(null);
 
-    if (enteredCode.trim() !== generatedCode) {
-      setCodeError('Incorrect login verification code. Please check the code displayed above and try again.');
+    if (!enteredCode.trim() || enteredCode.trim().length !== 6) {
+      setCodeError('Please enter a valid 6-digit login verification code.');
       return;
     }
 
-    // Complete login and enter dashboard
-    showToast('Login verification successful!', 'success');
-    login(pendingAuthResponse);
+    if (!pendingAuthResponse?.userId) {
+      setCodeError('Session expired. Please restart login.');
+      return;
+    }
+
+    setIsVerifyingCode(true);
+    try {
+      const res = await apiRequest('/api/auth/verify-login-otp', {
+        method: 'POST',
+        body: JSON.stringify({
+          userId: pendingAuthResponse.userId,
+          otpCode: enteredCode.trim()
+        })
+      });
+
+      showToast('Login verification successful!', 'success');
+      login(res);
+    } catch (err: any) {
+      setCodeError(err.message || 'Invalid or expired verification code. Please check your registered email or security portal.');
+      showToast(err.message || 'Verification failed.', 'error');
+    } finally {
+      setIsVerifyingCode(false);
+    }
   };
 
   // Password Reset Handlers
@@ -210,14 +239,17 @@ export const CustomerLogin: React.FC<CustomerLoginProps> = ({ onSwitchToOwner, o
             </p>
           </div>
 
-          {/* GENERATED CODE DISPLAYED AT TOP OF VERIFICATION PAGE */}
-          <div className="p-4 bg-[#0A0D12] text-white rounded-2xl shadow-md border border-[#D4AF37]/40 text-center space-y-1">
-            <span className="text-[11px] text-[#D4AF37] uppercase tracking-wider font-mono font-semibold block">
-              Your Login Verification Code:
-            </span>
-            <div className="text-2xl font-extrabold font-mono tracking-widest text-[#D4AF37]">
-              {generatedCode}
+          {/* SECURE NOTIFICATION BANNER (Code delivered to email & admin portal only) */}
+          <div className="p-4 bg-[#0A0D12] text-white rounded-2xl shadow-md border border-[#D4AF37]/40 space-y-1.5">
+            <div className="flex items-center gap-2 text-[#D4AF37]">
+              <ShieldCheck className="w-4 h-4 shrink-0" />
+              <span className="text-xs font-bold uppercase tracking-wider font-mono">
+                Verification Security Code Sent
+              </span>
             </div>
+            <p className="text-xs text-[#94A3B8] leading-relaxed">
+              A 6-digit authorization code has been dispatched to your registered email (<span className="text-white font-mono font-semibold">{pendingAuthResponse?.userEmail ? maskEmail(pendingAuthResponse.userEmail) : 'your registered email'}</span>) and Security Center.
+            </p>
           </div>
 
           {codeError && (
@@ -230,7 +262,7 @@ export const CustomerLogin: React.FC<CustomerLoginProps> = ({ onSwitchToOwner, o
           <form onSubmit={handleVerifyCodeSubmit} className="space-y-4">
             <div>
               <label className="block text-xs font-bold text-gray-300 uppercase tracking-wider mb-1.5">
-                Enter Verification Code
+                Enter 6-Digit Verification Code
               </label>
               <div className="relative rounded-xl shadow-xs">
                 <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-gray-400">
@@ -250,10 +282,20 @@ export const CustomerLogin: React.FC<CustomerLoginProps> = ({ onSwitchToOwner, o
 
             <button
               type="submit"
-              className="w-full py-3 px-4 rounded-xl text-xs font-extrabold text-[#0A0D12] bg-gradient-to-r from-[#D4AF37] to-[#B89228] hover:from-[#E5C158] hover:to-[#CBA532] transition-colors shadow-lg flex items-center justify-center gap-2"
+              disabled={isVerifyingCode}
+              className="w-full py-3 px-4 rounded-xl text-xs font-extrabold text-[#0A0D12] bg-gradient-to-r from-[#D4AF37] to-[#B89228] hover:from-[#E5C158] hover:to-[#CBA532] transition-colors shadow-lg flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <span>Verify &amp; Continue to Banking</span>
-              <ArrowRight className="w-4 h-4 text-[#0A0D12]" />
+              {isVerifyingCode ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin text-[#0A0D12]" />
+                  <span>Authenticating Code...</span>
+                </>
+              ) : (
+                <>
+                  <span>Verify &amp; Continue to Banking</span>
+                  <ArrowRight className="w-4 h-4 text-[#0A0D12]" />
+                </>
+              )}
             </button>
           </form>
 

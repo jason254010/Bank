@@ -2,6 +2,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { apiRequest } from '../../services/api';
 import { SupportConversation, SupportMessage, SupportAttachment } from '../../types';
+import { HotlineCallModal } from './HotlineCallModal';
+import {
+  SupportLanguage,
+  SUPPORT_LANGUAGES,
+  getTranslation
+} from '../../utils/supportTranslations';
 import {
   MessageSquare,
   X,
@@ -19,7 +25,12 @@ import {
   UserCheck,
   ShieldCheck,
   AlertCircle,
-  ExternalLink
+  ExternalLink,
+  Globe,
+  ChevronDown,
+  ArrowRight,
+  Loader2,
+  Phone
 } from 'lucide-react';
 
 interface SupportWidgetProps {
@@ -37,17 +48,56 @@ export const SupportWidget: React.FC<SupportWidgetProps> = ({ isOpen, onClose })
   const [isSending, setIsSending] = useState(false);
   const [isAiThinking, setIsAiThinking] = useState(false);
 
+  // Language state stored in localStorage
+  const [selectedLang, setSelectedLang] = useState<SupportLanguage>(() => {
+    const saved = localStorage.getItem('nova_support_lang') as SupportLanguage;
+    return saved && SUPPORT_LANGUAGES.some(l => l.code === saved) ? saved : 'en';
+  });
+  const [isLangMenuOpen, setIsLangMenuOpen] = useState(false);
+
+  // Flow State Flags
+  const [showAccountReviewForm, setShowAccountReviewForm] = useState(false);
+  const [showContinueButton, setShowContinueButton] = useState(false);
+  const [isAccountReviewing, setIsAccountReviewing] = useState(false);
+
   // Verification Form State
   const [verifFullName, setVerifFullName] = useState('');
-  const [verifCustomerIdOrEmail, setVerifCustomerIdOrEmail] = useState('');
-  const [verifPassword, setVerifPassword] = useState('');
-  const [isVerifying, setIsVerifying] = useState(false);
+  const [verifAccountNumber, setVerifAccountNumber] = useState('');
+  const [verifEmail, setVerifEmail] = useState('');
+
+  // Hotline Modal State
+  const [isHotlineModalOpen, setIsHotlineModalOpen] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  const handleChannelSwitch = async (newChannel: 'IN_APP' | 'WHATSAPP' | 'TELEGRAM') => {
+    if (!conversation) return;
+    try {
+      const res = await apiRequest<{ success: boolean; conversation: SupportConversation }>(`/api/support/conversations/${conversation.id}/channel`, {
+        method: 'PUT',
+        body: JSON.stringify({ channel: newChannel })
+      });
+      if (res.conversation) {
+        setConversation(res.conversation);
+        showToast(`Switched support channel to ${newChannel === 'WHATSAPP' ? 'WhatsApp' : newChannel === 'TELEGRAM' ? 'Telegram' : 'Website'}`, 'info');
+      }
+    } catch (err) {
+      console.error('Failed to update channel:', err);
+    }
+  };
+
+  const t = (key: string, fallback?: string) => getTranslation(selectedLang, key, fallback);
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const changeLanguage = (lang: SupportLanguage) => {
+    setSelectedLang(lang);
+    localStorage.setItem('nova_support_lang', lang);
+    setIsLangMenuOpen(false);
+    showToast(`Support language updated to ${SUPPORT_LANGUAGES.find(l => l.code === lang)?.name}`, 'info');
   };
 
   const loadConversationAndMessages = async () => {
@@ -64,6 +114,10 @@ export const SupportWidget: React.FC<SupportWidgetProps> = ({ isOpen, onClose })
 
         const msgs = await apiRequest<SupportMessage[]>(`/api/support/conversations/${activeConv.id}/messages`);
         setMessages(msgs);
+
+        // Prefill account review inputs with logged in user data for convenience
+        setVerifFullName(user.fullName || '');
+        setVerifEmail(user.email || '');
       }
     } catch (e: any) {
       if (!e?.message?.includes('Unauthorized')) {
@@ -80,7 +134,7 @@ export const SupportWidget: React.FC<SupportWidgetProps> = ({ isOpen, onClose })
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, isAiThinking]);
+  }, [messages, isAiThinking, showAccountReviewForm, showContinueButton, isAccountReviewing]);
 
   // Poll for new messages every 3 seconds when widget is open
   useEffect(() => {
@@ -146,23 +200,47 @@ export const SupportWidget: React.FC<SupportWidgetProps> = ({ isOpen, onClose })
     setAttachments(prev => prev.filter(a => a.id !== id));
   };
 
-  const selectSupportMode = async (mode: 'AI_ASSISTANT' | 'HUMAN_VERIFICATION') => {
+  const selectSupportMode = async (mode: 'AI_ASSISTANT' | 'HUMAN_SUPPORT') => {
     if (!conversation) return;
-    try {
-      const updatedConv = await apiRequest<SupportConversation>(`/api/support/conversations/${conversation.id}/mode`, {
-        method: 'PUT',
-        body: JSON.stringify({ mode })
-      });
-      setConversation(updatedConv);
-      const msgs = await apiRequest<SupportMessage[]>(`/api/support/conversations/${conversation.id}/messages`);
-      setMessages(msgs);
-    } catch (err: any) {
-      showToast('Failed to select support mode', 'error');
+
+    if (mode === 'HUMAN_SUPPORT') {
+      try {
+        setIsLoading(true);
+        const res = await apiRequest<{ success: boolean; message: SupportMessage; conversation: SupportConversation }>('/api/support/escalate-to-human', {
+          method: 'POST',
+          body: JSON.stringify({
+            conversationId: conversation.id,
+            targetLanguage: selectedLang
+          })
+        });
+        if (res.conversation) setConversation(res.conversation);
+        const updatedMsgs = await apiRequest<SupportMessage[]>(`/api/support/conversations/${conversation.id}/messages`);
+        setMessages(updatedMsgs);
+        setShowContinueButton(false);
+        setShowAccountReviewForm(false);
+      } catch (err: any) {
+        showToast('Failed to connect with Human Support Agent', 'error');
+      } finally {
+        setIsLoading(false);
+      }
+    } else {
+      try {
+        const updatedConv = await apiRequest<SupportConversation>(`/api/support/conversations/${conversation.id}/mode`, {
+          method: 'PUT',
+          body: JSON.stringify({ mode: 'AI_ASSISTANT' })
+        });
+        setConversation(updatedConv);
+        const msgs = await apiRequest<SupportMessage[]>(`/api/support/conversations/${conversation.id}/messages`);
+        setMessages(msgs);
+      } catch (err: any) {
+        showToast('Failed to start AI Assistant session', 'error');
+      }
     }
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSending || isAiThinking) return;
     if (!newMessage.trim() && attachments.length === 0) return;
     if (!conversation) return;
 
@@ -185,21 +263,28 @@ export const SupportWidget: React.FC<SupportWidgetProps> = ({ isOpen, onClose })
       setAttachments([]);
       scrollToBottom();
 
-      // If in INITIAL or SELECT_MODE mode, set mode to AI_ASSISTANT by default or trigger AI chat
       const currentMode = conversation.mode || 'INITIAL';
 
       if (currentMode === 'INITIAL' || currentMode === 'SELECT_MODE' || currentMode === 'AI_ASSISTANT') {
         setIsAiThinking(true);
         try {
-          const aiRes = await apiRequest<{ message: SupportMessage; conversation: SupportConversation }>('/api/support/ai-chat', {
+          const aiRes = await apiRequest<{
+            message: SupportMessage;
+            conversation: SupportConversation;
+            showAccountReviewForm?: boolean;
+            showContinueButton?: boolean;
+          }>('/api/support/ai-chat', {
             method: 'POST',
             body: JSON.stringify({
               conversationId: conversation.id,
-              userMessage: userText
+              userMessage: userText,
+              targetLanguage: selectedLang
             })
           });
           setMessages(prev => [...prev, aiRes.message]);
           if (aiRes.conversation) setConversation(aiRes.conversation);
+          if (aiRes.showAccountReviewForm) setShowAccountReviewForm(true);
+          if (aiRes.showContinueButton) setShowContinueButton(true);
         } catch (aiErr) {
           console.error('AI Support Response failed:', aiErr);
         } finally {
@@ -214,41 +299,66 @@ export const SupportWidget: React.FC<SupportWidgetProps> = ({ isOpen, onClose })
     }
   };
 
-  const handleVerifySubmit = async (e: React.FormEvent) => {
+  const handleAccountReviewSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!conversation) return;
-    if (!verifFullName || !verifCustomerIdOrEmail || !verifPassword) {
-      showToast('Please fill in all verification fields.', 'error');
+    if (!verifFullName || !verifAccountNumber || !verifEmail) {
+      showToast('Please fill in Full Name, Account Number, and Registered Email Address.', 'error');
       return;
     }
 
-    setIsVerifying(true);
+    setIsAccountReviewing(true);
+    setShowAccountReviewForm(false);
+
     try {
-      const res = await apiRequest<{ success: boolean; message: string; conversation: SupportConversation; aiMessage: SupportMessage }>('/api/support/verify-identity', {
+      // Simulate realistic review verification delay
+      await new Promise(res => setTimeout(res, 2200));
+
+      const res = await apiRequest<{
+        success: boolean;
+        message: SupportMessage;
+        conversation: SupportConversation;
+        showContinueButton?: boolean;
+      }>('/api/support/check-account-status', {
         method: 'POST',
         body: JSON.stringify({
           conversationId: conversation.id,
           fullName: verifFullName,
-          customerIdOrEmail: verifCustomerIdOrEmail,
-          password: verifPassword
+          accountNumber: verifAccountNumber,
+          email: verifEmail,
+          targetLanguage: selectedLang
         })
       });
 
-      if (res.success) {
-        showToast('Identity verified successfully!', 'success');
-        setConversation(res.conversation);
-        setVerifFullName('');
-        setVerifCustomerIdOrEmail('');
-        setVerifPassword('');
-        const updatedMsgs = await apiRequest<SupportMessage[]>(`/api/support/conversations/${conversation.id}/messages`);
-        setMessages(updatedMsgs);
-      }
+      if (res.conversation) setConversation(res.conversation);
+      if (res.message) setMessages(prev => [...prev, res.message]);
+      if (res.showContinueButton) setShowContinueButton(true);
     } catch (err: any) {
-      showToast(err.message || 'Verification unsuccessful. Details do not match our records.', 'error');
-      const updatedMsgs = await apiRequest<SupportMessage[]>(`/api/support/conversations/${conversation.id}/messages`);
-      setMessages(updatedMsgs);
+      showToast(err.message || 'Verification unsuccessful.', 'error');
     } finally {
-      setIsVerifying(false);
+      setIsAccountReviewing(false);
+      scrollToBottom();
+    }
+  };
+
+  const handleEscalateContinue = async () => {
+    if (!conversation) return;
+    try {
+      setIsLoading(true);
+      const res = await apiRequest<{ success: boolean; message: SupportMessage; conversation: SupportConversation }>('/api/support/escalate-to-human', {
+        method: 'POST',
+        body: JSON.stringify({
+          conversationId: conversation.id,
+          targetLanguage: selectedLang
+        })
+      });
+      if (res.conversation) setConversation(res.conversation);
+      if (res.message) setMessages(prev => [...prev, res.message]);
+      setShowContinueButton(false);
+    } catch (err: any) {
+      showToast('Failed to transfer to Human Support Agent', 'error');
+    } finally {
+      setIsLoading(false);
       scrollToBottom();
     }
   };
@@ -268,10 +378,10 @@ export const SupportWidget: React.FC<SupportWidgetProps> = ({ isOpen, onClose })
               <Headphones className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="font-extrabold text-sm text-white">Nova Trust Customer Support</h3>
+              <h3 className="font-extrabold text-sm text-white">{t('title')}</h3>
               <div className="flex items-center gap-1.5 text-[11px] text-[#D4AF37] font-mono font-semibold">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span>24/7 Intelligent Banking Desk</span>
+                <span>{t('subtitle')}</span>
               </div>
             </div>
           </div>
@@ -304,56 +414,125 @@ export const SupportWidget: React.FC<SupportWidgetProps> = ({ isOpen, onClose })
   }
 
   const currentMode = conversation?.mode || 'INITIAL';
+  const showWelcomeCard = currentMode === 'SELECT_MODE' || (currentMode === 'INITIAL' && messages.length <= 1);
+  const currentLangObj = SUPPORT_LANGUAGES.find(l => l.code === selectedLang) || SUPPORT_LANGUAGES[0];
 
   return (
     <div className="fixed inset-0 sm:inset-auto sm:bottom-4 sm:right-4 z-50 sm:w-[440px] sm:h-[620px] bg-white sm:rounded-2xl shadow-2xl border border-[#DCE3EC] flex flex-col overflow-hidden animate-fade-in font-sans">
       
       {/* Support Header & Quick External Channels */}
-      <div className="bg-[#0B1F3A] text-white border-b border-[#0F4C81]/40">
+      <div className="bg-[#0B1F3A] text-white border-b border-[#0F4C81]/40 relative">
         <div className="p-3.5 flex items-center justify-between">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5">
             <div className="bg-[#0F4C81] p-2 rounded-xl text-[#D4AF37] border border-white/10 shadow-sm">
               <Bot className="w-5 h-5 text-[#D4AF37]" />
             </div>
             <div>
-              <h3 className="font-extrabold text-sm text-white">Nova Trust Support Assistant</h3>
+              <h3 className="font-extrabold text-sm text-white">{t('title')}</h3>
               <div className="flex items-center gap-1.5 text-[10px] text-[#D4AF37] font-mono font-semibold">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span>24/7 Virtual Concierge &amp; Live Desk</span>
+                <span>{t('subtitle')}</span>
               </div>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="text-gray-300 hover:text-white p-1.5 bg-white/10 hover:bg-white/20 rounded-xl transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
+
+          <div className="flex items-center gap-1.5">
+            {/* Call Hotline Button */}
+            <button
+              type="button"
+              onClick={() => setIsHotlineModalOpen(true)}
+              className="flex items-center gap-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-[11px] font-bold px-2.5 py-1.5 rounded-xl border border-amber-400/40 transition-all active:scale-95 shadow-xs"
+              title="Call Nova Trust Hotline"
+            >
+              <Phone className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
+              <span className="hidden sm:inline">Hotline</span>
+            </button>
+
+            {/* Language Selector Dropdown */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setIsLangMenuOpen(!isLangMenuOpen)}
+                className="flex items-center gap-1 bg-white/10 hover:bg-white/20 text-white text-[11px] font-semibold px-2.5 py-1.5 rounded-xl border border-white/20 transition-colors"
+                title="Select Support Language"
+              >
+                <Globe className="w-3.5 h-3.5 text-[#D4AF37]" />
+                <span>{currentLangObj.flag}</span>
+                <span className="uppercase">{currentLangObj.code}</span>
+                <ChevronDown className="w-3 h-3 text-gray-300" />
+              </button>
+
+              {isLangMenuOpen && (
+                <div className="absolute right-0 mt-2 w-48 bg-white text-gray-800 rounded-2xl shadow-2xl border border-gray-200 py-2 z-50 max-h-64 overflow-y-auto font-sans">
+                  <div className="px-3 py-1.5 border-b border-gray-100 text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                    {t('languageLabel', 'Select Language')}
+                  </div>
+                  {SUPPORT_LANGUAGES.map(lang => (
+                    <button
+                      key={lang.code}
+                      type="button"
+                      onClick={() => changeLanguage(lang.code)}
+                      className={`w-full text-left px-3.5 py-2 text-xs flex items-center justify-between hover:bg-blue-50 transition-colors ${
+                        selectedLang === lang.code ? 'bg-blue-50/80 font-bold text-[#0057B8]' : 'text-gray-700'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span>{lang.flag}</span>
+                        <span>{lang.nativeName}</span>
+                      </div>
+                      <span className="text-[10px] font-mono uppercase text-gray-400">{lang.code}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <button
+              onClick={onClose}
+              className="text-gray-300 hover:text-white p-1.5 bg-white/10 hover:bg-white/20 rounded-xl transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
-        {/* External Quick Access Channels */}
-        <div className="bg-[#08172C] px-3.5 py-1.5 flex items-center justify-between text-[11px] border-t border-white/10">
-          <span className="text-gray-400 font-medium">Direct Support Channels:</span>
-          <div className="flex items-center gap-2">
-            <a
-              href={`https://wa.me/${formattedWhatsApp}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="px-2 py-0.5 bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-300 rounded font-semibold flex items-center gap-1 text-[10px] border border-emerald-500/30 transition-colors"
-            >
-              <span>WhatsApp</span>
-              <ExternalLink className="w-2.5 h-2.5" />
-            </a>
-            <a
-              href={`https://t.me/${rawTelegram}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="px-2 py-0.5 bg-sky-600/30 hover:bg-sky-600/50 text-sky-300 rounded font-semibold flex items-center gap-1 text-[10px] border border-sky-500/30 transition-colors"
-            >
-              <span>Telegram</span>
-              <ExternalLink className="w-2.5 h-2.5" />
-            </a>
+        {/* Interactive Multi-Channel Mode Switcher Bar */}
+        <div className="bg-[#08172C] px-3.5 py-2 flex items-center justify-between text-[11px] border-t border-white/10 gap-2">
+          <span className="text-[#A9D8F7] font-semibold text-[10px] uppercase tracking-wider shrink-0">Channel:</span>
+          <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
+            {[
+              { id: 'IN_APP', label: 'Website', icon: '🌐', bg: 'bg-indigo-600/30 text-indigo-200 border-indigo-400/40' },
+              { id: 'WHATSAPP', label: 'WhatsApp', icon: '💬', bg: 'bg-emerald-600/30 text-emerald-300 border-emerald-400/40' },
+              { id: 'TELEGRAM', label: 'Telegram', icon: '✈️', bg: 'bg-sky-600/30 text-sky-300 border-sky-400/40' }
+            ].map(ch => {
+              const isActive = (conversation?.channel || 'IN_APP') === ch.id;
+              return (
+                <button
+                  key={ch.id}
+                  type="button"
+                  onClick={() => handleChannelSwitch(ch.id as any)}
+                  className={`px-2 py-0.5 rounded text-[10px] font-bold border transition-all flex items-center gap-1 shrink-0 ${
+                    isActive ? `${ch.bg} shadow-xs ring-1 ring-white/20` : 'bg-white/5 text-gray-300 border-white/10 hover:bg-white/10'
+                  }`}
+                >
+                  <span>{ch.icon}</span>
+                  <span>{ch.label}</span>
+                </button>
+              );
+            })}
           </div>
+
+          {(conversation?.channel === 'WHATSAPP' || conversation?.channel === 'TELEGRAM') && (
+            <a
+              href={conversation.channel === 'WHATSAPP' ? `https://wa.me/${formattedWhatsApp}` : `https://t.me/${rawTelegram}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="p-1 bg-white/10 hover:bg-white/20 text-white rounded transition-colors shrink-0"
+              title={`Open in ${conversation.channel === 'WHATSAPP' ? 'WhatsApp' : 'Telegram'}`}
+            >
+              <ExternalLink className="w-3 h-3 text-[#A9D8F7]" />
+            </a>
+          )}
         </div>
       </div>
 
@@ -362,10 +541,10 @@ export const SupportWidget: React.FC<SupportWidgetProps> = ({ isOpen, onClose })
         <div className="bg-emerald-50 border-b border-emerald-200 px-3.5 py-2 flex items-center justify-between text-xs text-emerald-800">
           <div className="flex items-center gap-1.5">
             <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
-            <span className="font-bold">Verified Human Representative Connected</span>
+            <span className="font-bold">{t('verifiedHumanConnected')}</span>
           </div>
           <span className="text-[10px] font-mono bg-emerald-100 px-2 py-0.5 rounded text-emerald-900 font-semibold">
-            LIVE DESK
+            {t('liveDesk')}
           </span>
         </div>
       )}
@@ -375,10 +554,47 @@ export const SupportWidget: React.FC<SupportWidgetProps> = ({ isOpen, onClose })
         {isLoading ? (
           <div className="flex flex-col items-center justify-center h-full text-center p-6 text-[#5E6C84]">
             <Clock className="w-8 h-8 animate-spin text-[#0F4C81] mb-2" />
-            <p className="text-xs font-mono">Connecting to 24/7 AI Banking Desk...</p>
+            <p className="text-xs font-mono">Connecting to Nova Trust Banking Desk...</p>
           </div>
         ) : (
           <>
+            {/* Welcome Flow Selector Screen */}
+            {showWelcomeCard && (
+              <div className="p-4 bg-white rounded-2xl border border-[#0057B8]/30 shadow-md space-y-3.5 text-center animate-fade-in">
+                <div className="w-10 h-10 bg-[#0057B8]/10 text-[#0057B8] rounded-xl flex items-center justify-center mx-auto">
+                  <Bot className="w-6 h-6" />
+                </div>
+                <div>
+                  <h4 className="font-extrabold text-sm text-[#0B1F3A] mb-1">
+                    {t('welcomeHeader')}
+                  </h4>
+                  <p className="text-xs text-gray-600 whitespace-pre-line leading-relaxed font-medium">
+                    {t('welcomeBody')}
+                  </p>
+                </div>
+
+                <div className="space-y-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => selectSupportMode('AI_ASSISTANT')}
+                    className="w-full bg-[#0057B8] hover:bg-[#004bb0] text-white py-3 px-4 rounded-xl text-xs font-bold shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2"
+                  >
+                    <span>{t('aiAssistantOpt')}</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => selectSupportMode('HUMAN_SUPPORT')}
+                    className="w-full bg-slate-100 hover:bg-slate-200 text-[#0B1F3A] py-3 px-4 rounded-xl text-xs font-bold border border-gray-200 transition-all flex items-center justify-center gap-2"
+                  >
+                    <span>{t('humanSupportOpt')}</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Chat Messages */}
             {messages.map(msg => {
               const isMe = msg.senderId === user.id;
               const isAi = msg.senderId === 'AI_BOT' || msg.senderName.includes('AI') || msg.senderName.includes('Concierge');
@@ -414,7 +630,7 @@ export const SupportWidget: React.FC<SupportWidgetProps> = ({ isOpen, onClose })
                     </div>
 
                     <div
-                      className={`p-3 rounded-2xl max-w-[88%] text-xs shadow-xs ${
+                      className={`p-3 rounded-2xl max-w-[90%] text-xs shadow-xs ${
                         isMe
                           ? 'bg-[#0057B8] text-white rounded-tr-none'
                           : isAi
@@ -500,59 +716,37 @@ export const SupportWidget: React.FC<SupportWidgetProps> = ({ isOpen, onClose })
             {isAiThinking && (
               <div className="flex items-center gap-2 text-xs text-[#0F4C81] bg-blue-50/80 p-2.5 rounded-xl border border-blue-200 animate-pulse w-fit">
                 <Bot className="w-4 h-4 text-[#0F4C81] animate-bounce" />
-                <span className="font-medium">AI Concierge is preparing guidance...</span>
+                <span className="font-medium">AI Concierge is processing your request...</span>
               </div>
             )}
 
-            {/* Prompt for Selecting AI vs Human Support */}
-            {currentMode !== 'HUMAN_SUPPORT' && currentMode !== 'HUMAN_VERIFICATION' && (
-              <div className="my-3 p-3.5 bg-white rounded-2xl border border-[#0057B8]/20 shadow-sm text-center space-y-2.5">
-                <p className="text-xs font-semibold text-[#0B1F3A]">
-                  Would you like assistance from our AI Assistant or would you prefer to speak with a Human Support Representative?
-                </p>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => selectSupportMode('AI_ASSISTANT')}
-                    className={`py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 border ${
-                      currentMode === 'AI_ASSISTANT'
-                        ? 'bg-[#0057B8] text-white border-[#0057B8] shadow-xs'
-                        : 'bg-blue-50 text-[#0057B8] border-blue-200 hover:bg-blue-100'
-                    }`}
-                  >
-                    <Bot className="w-3.5 h-3.5" />
-                    <span>AI Assistant</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => selectSupportMode('HUMAN_VERIFICATION')}
-                    className="py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100"
-                  >
-                    <UserCheck className="w-3.5 h-3.5 text-amber-600" />
-                    <span>Human Support</span>
-                  </button>
+            {/* Account Review Verification Progress Loading State */}
+            {isAccountReviewing && (
+              <div className="p-4 bg-white rounded-2xl border border-blue-200 shadow-sm text-center space-y-2.5 animate-pulse">
+                <Loader2 className="w-6 h-6 text-[#0057B8] animate-spin mx-auto" />
+                <div className="text-xs text-[#0B1F3A] font-semibold whitespace-pre-line leading-relaxed">
+                  {t('verifyingProgress')}
                 </div>
               </div>
             )}
 
-            {/* Human Support Identity Verification Form */}
-            {currentMode === 'HUMAN_VERIFICATION' && (
-              <div className="bg-white rounded-2xl border-2 border-[#0057B8] p-4 shadow-lg space-y-3">
+            {/* Interactive Account Review Form */}
+            {showAccountReviewForm && !isAccountReviewing && (
+              <div className="bg-white rounded-2xl border-2 border-[#0057B8] p-4 shadow-lg space-y-3 animate-fade-in">
                 <div className="flex items-center gap-2 border-b border-gray-100 pb-2">
                   <ShieldCheck className="w-5 h-5 text-[#0057B8]" />
                   <div>
-                    <h4 className="font-bold text-xs text-[#0B1F3A]">Identity Verification Required</h4>
+                    <h4 className="font-bold text-xs text-[#0B1F3A]">{t('verifyTitle')}</h4>
                     <p className="text-[10px] text-gray-500">
-                      Before connecting with a Human Support Representative, please verify your details.
+                      {t('verifySubtitle')}
                     </p>
                   </div>
                 </div>
 
-                <form onSubmit={handleVerifySubmit} className="space-y-2.5 text-xs">
+                <form onSubmit={handleAccountReviewSubmit} className="space-y-2.5 text-xs">
                   <div>
                     <label className="block text-[11px] font-semibold text-gray-700 mb-0.5">
-                      Full Name <span className="text-rose-500">*</span>
+                      {t('fullName')} <span className="text-rose-500">*</span>
                     </label>
                     <input
                       type="text"
@@ -566,13 +760,13 @@ export const SupportWidget: React.FC<SupportWidgetProps> = ({ isOpen, onClose })
 
                   <div>
                     <label className="block text-[11px] font-semibold text-gray-700 mb-0.5">
-                      Customer ID or Registered Email <span className="text-rose-500">*</span>
+                      {t('accountNumber')} <span className="text-rose-500">*</span>
                     </label>
                     <input
                       type="text"
-                      value={verifCustomerIdOrEmail}
-                      onChange={e => setVerifCustomerIdOrEmail(e.target.value)}
-                      placeholder="e.g. CID-849201 or customer@example.com"
+                      value={verifAccountNumber}
+                      onChange={e => setVerifAccountNumber(e.target.value)}
+                      placeholder="e.g. 1092837465"
                       required
                       className="w-full bg-white text-black caret-black px-3 py-2 rounded-xl border border-gray-300 focus:outline-none focus:border-[#0057B8]"
                     />
@@ -580,13 +774,13 @@ export const SupportWidget: React.FC<SupportWidgetProps> = ({ isOpen, onClose })
 
                   <div>
                     <label className="block text-[11px] font-semibold text-gray-700 mb-0.5">
-                      Account Password <span className="text-rose-500">*</span>
+                      {t('registeredEmail')} <span className="text-rose-500">*</span>
                     </label>
                     <input
-                      type="password"
-                      value={verifPassword}
-                      onChange={e => setVerifPassword(e.target.value)}
-                      placeholder="Enter account password"
+                      type="email"
+                      value={verifEmail}
+                      onChange={e => setVerifEmail(e.target.value)}
+                      placeholder="e.g. customer@example.com"
                       required
                       className="w-full bg-white text-black caret-black px-3 py-2 rounded-xl border border-gray-300 focus:outline-none focus:border-[#0057B8]"
                     />
@@ -594,21 +788,27 @@ export const SupportWidget: React.FC<SupportWidgetProps> = ({ isOpen, onClose })
 
                   <div className="pt-1 flex gap-2">
                     <button
-                      type="button"
-                      onClick={() => selectSupportMode('AI_ASSISTANT')}
-                      className="flex-1 bg-gray-100 text-gray-700 hover:bg-gray-200 py-2 rounded-xl font-semibold text-xs transition-colors"
-                    >
-                      Back to AI
-                    </button>
-                    <button
                       type="submit"
-                      disabled={isVerifying}
-                      className="flex-2 bg-[#0057B8] hover:bg-[#004bb0] text-white py-2 rounded-xl font-bold text-xs shadow-md transition-all disabled:opacity-50"
+                      className="w-full bg-[#0057B8] hover:bg-[#004bb0] text-white py-2.5 rounded-xl font-bold text-xs shadow-md transition-all"
                     >
-                      {isVerifying ? 'Verifying...' : 'Verify & Connect Representative'}
+                      {t('submitVerification')}
                     </button>
                   </div>
                 </form>
+              </div>
+            )}
+
+            {/* Prominent Continue Escalation Button */}
+            {showContinueButton && !isAccountReviewing && (
+              <div className="pt-2 pb-1 flex justify-center animate-bounce-short">
+                <button
+                  type="button"
+                  onClick={handleEscalateContinue}
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs py-3 px-6 rounded-2xl shadow-lg border border-emerald-400/40 flex items-center justify-center gap-2 transition-all hover:scale-[1.02]"
+                >
+                  <span>{t('continueBtn')}</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
               </div>
             )}
           </>
@@ -669,7 +869,7 @@ export const SupportWidget: React.FC<SupportWidgetProps> = ({ isOpen, onClose })
           type="text"
           value={newMessage}
           onChange={e => setNewMessage(e.target.value)}
-          placeholder={currentMode === 'HUMAN_VERIFICATION' ? 'Complete identity verification above...' : 'Ask AI or type support request...'}
+          placeholder={t('inputPlaceholder')}
           className="flex-1 bg-white text-black caret-black text-xs px-3.5 py-2.5 rounded-xl border border-gray-300 focus:outline-none focus:border-[#0F4C81] focus:ring-2 focus:ring-[#0F4C81]/20 placeholder:text-gray-500 font-sans shadow-xs"
         />
 
@@ -681,6 +881,16 @@ export const SupportWidget: React.FC<SupportWidgetProps> = ({ isOpen, onClose })
           <Send className="w-4 h-4 text-[#D4AF37]" />
         </button>
       </form>
+
+      {/* Hotline Simulator Audio Call Overlay */}
+      <HotlineCallModal
+        isOpen={isHotlineModalOpen}
+        onClose={() => setIsHotlineModalOpen(false)}
+        settings={settings}
+        onSelectWhatsApp={() => handleChannelSwitch('WHATSAPP')}
+        onSelectTelegram={() => handleChannelSwitch('TELEGRAM')}
+        onSelectInApp={() => handleChannelSwitch('IN_APP')}
+      />
     </div>
   );
 };
@@ -755,3 +965,4 @@ const SupportLoginForm: React.FC<{ onLoginSuccess: () => void }> = ({ onLoginSuc
     </form>
   );
 };
+

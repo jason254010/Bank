@@ -55,6 +55,7 @@ import {
   MapPin,
   Mail,
   Phone,
+  Headphones,
   BookOpen,
   Layers,
   User as UserIcon,
@@ -85,11 +86,16 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
   };
 
   // Bank Settings & Homepage Video State
+  const defaultHotlineGreeting = "Welcome to Nova Trust Bank. Thank you for calling our Customer Support Hotline. At this time, live phone support is unavailable. For faster assistance, please contact us through our official WhatsApp or Telegram support channels, where our AI Assistant and Human Support Representatives are available to help you. Thank you for choosing Nova Trust Bank. Goodbye.";
+
   const [settingsForm, setSettingsForm] = useState({
     whatsappNumber: '',
     telegramUsername: '',
+    telegramLink: '',
     supportEmail: '',
     supportPhone: '',
+    hotlinePhone: '',
+    hotlineGreeting: '',
     officeAddress: '',
     businessHours: ''
   });
@@ -105,11 +111,17 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
 
   useEffect(() => {
     if (settings) {
+      const tgUser = settings.telegramUsername || '';
+      const tgLink = settings.telegramLink || (tgUser.startsWith('http') ? tgUser : `https://t.me/${tgUser.replace('@', '') || 'NovaTrustSupport'}`);
+      
       setSettingsForm({
         whatsappNumber: settings.whatsappNumber || '',
-        telegramUsername: settings.telegramUsername || '',
+        telegramUsername: tgUser,
+        telegramLink: tgLink,
         supportEmail: settings.supportEmail || '',
         supportPhone: settings.supportPhone || '',
+        hotlinePhone: settings.hotlinePhone || settings.supportPhone || '+1 (800) 555-NOVA',
+        hotlineGreeting: settings.hotlineGreeting || defaultHotlineGreeting,
         officeAddress: settings.officeAddress || '100 Financial Plaza, Suite 2800, New York, NY 10005',
         businessHours: settings.businessHours || '24/7 Digital Banking & Support'
       });
@@ -216,6 +228,12 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [createdCustomerData, setCreatedCustomerData] = useState<any>(null);
 
+  // Processing tracking sets for action buttons
+  const [statusProcessingIds, setStatusProcessingIds] = useState<Set<string>>(new Set());
+  const [kycProcessingIds, setKycProcessingIds] = useState<Set<string>>(new Set());
+  const [deletingCustomerIds, setDeletingCustomerIds] = useState<Set<string>>(new Set());
+  const [sendingCodeIds, setSendingCodeIds] = useState<Set<string>>(new Set());
+
   // Credit / Debit Modal
   const [balanceModal, setBalanceModal] = useState<{
     isOpen: boolean;
@@ -223,19 +241,22 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
     type: 'CREDIT' | 'DEBIT';
     amount: string;
     description: string;
+    isSubmitting?: boolean;
   }>({
     isOpen: false,
     customer: null,
     type: 'CREDIT',
     amount: '',
-    description: ''
+    description: '',
+    isSubmitting: false
   });
 
   // Edit Customer Modal & Form
   const [editModal, setEditModal] = useState<{
     isOpen: boolean;
     customer: (User & { account?: Account }) | null;
-  }>({ isOpen: false, customer: null });
+    isSubmitting?: boolean;
+  }>({ isOpen: false, customer: null, isSubmitting: false });
 
   const [editForm, setEditForm] = useState({
     fullName: '',
@@ -262,24 +283,35 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
 
   const handleSaveCustomerEdit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editModal.customer) return;
+    if (!editModal.customer || editModal.isSubmitting) return;
+
+    const customerId = editModal.customer.id;
+    setEditModal(prev => ({ ...prev, isSubmitting: true }));
+
+    // Optimistic UI update
+    setCustomers(prev => prev.map(c => c.id === customerId ? { ...c, ...editForm } : c));
+    if (profileModal.isOpen && profileModal.customer?.id === customerId) {
+      setProfileModal(prev => prev.customer ? { ...prev, customer: { ...prev.customer, ...editForm } } : prev);
+    }
 
     try {
-      const res = await apiRequest<{ customer: User }>(`/api/admin/customers/${editModal.customer.id}`, {
+      const res = await apiRequest<{ customer: User }>(`/api/admin/customers/${customerId}`, {
         method: 'PUT',
         body: JSON.stringify(editForm)
       });
 
       showToast('Customer profile updated successfully', 'success');
-      setEditModal({ isOpen: false, customer: null });
-      loadData();
+      setEditModal({ isOpen: false, customer: null, isSubmitting: false });
 
-      if (profileModal.isOpen && profileModal.customer?.id === editModal.customer.id) {
-        const details = await apiRequest<any>(`/api/admin/customers/${editModal.customer.id}/details`);
-        setProfileDetails(details);
-        setProfileModal(prev => ({ ...prev, customer: res.customer }));
+      if (res.customer) {
+        setCustomers(prev => prev.map(c => c.id === customerId ? { ...c, ...res.customer } : c));
+        if (profileModal.isOpen && profileModal.customer?.id === customerId) {
+          setProfileModal(prev => ({ ...prev, customer: { ...prev.customer, ...res.customer } }));
+        }
       }
     } catch (err: any) {
+      loadData(false);
+      setEditModal(prev => ({ ...prev, isSubmitting: false }));
       showToast(err.message || 'Failed to update customer', 'error');
     }
   };
@@ -289,6 +321,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
   const [convMessages, setConvMessages] = useState<SupportMessage[]>([]);
   const [replyText, setReplyText] = useState('');
   const [replyAttachments, setReplyAttachments] = useState<any[]>([]);
+  const [channelFilter, setChannelFilter] = useState<'ALL' | 'IN_APP' | 'WHATSAPP' | 'TELEGRAM'>('ALL');
 
   // Detailed Customer Profile Modal State
   const [profileModal, setProfileModal] = useState<{
@@ -383,8 +416,8 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
     isSubmitting: false
   });
 
-  const loadData = async () => {
-    setIsLoading(true);
+  const loadData = async (showFullLoading = false) => {
+    if (showFullLoading) setIsLoading(true);
     try {
       const [custsRes, txsRes, convsRes, auditRes, codesRes] = await Promise.all([
         apiRequest<any[]>('/api/admin/customers'),
@@ -400,36 +433,58 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
       setAuditLogs(auditRes);
       setTransferCodes(codesRes || []);
     } catch (e: any) {
-      showToast(e.message || 'Failed to load administrative bank data', 'error');
+      if (showFullLoading) {
+        showToast(e.message || 'Failed to load administrative bank data', 'error');
+      }
     } finally {
-      setIsLoading(false);
+      if (showFullLoading) setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    loadData();
+    loadData(true);
     const interval = setInterval(() => {
-      loadData();
-    }, 4000);
+      loadData(false);
+    }, 12000);
     return () => clearInterval(interval);
   }, []);
 
   const handleUpdateKycStatus = async (customerId: string, status: 'Verified' | 'Verification Required' | 'Suspended') => {
+    if (kycProcessingIds.has(customerId)) return;
+
+    const previousCustomers = [...customers];
+    const targetCust = customers.find(c => c.id === customerId);
+    const previousKyc = targetCust?.kycStatus;
+
+    setKycProcessingIds(prev => new Set(prev).add(customerId));
+
+    // Optimistic UI update
+    setCustomers(prev => prev.map(c => c.id === customerId ? { ...c, kycStatus: status } : c));
+    if (profileModal.isOpen && profileModal.customer?.id === customerId) {
+      setProfileModal(prev => prev.customer ? { ...prev, customer: { ...prev.customer, kycStatus: status } } : prev);
+    }
+
     try {
       const res = await apiRequest<{ customer: User; account?: Account }>(`/api/admin/customers/${customerId}/kyc-status`, {
         method: 'POST',
         body: JSON.stringify({ kycStatus: status })
       });
       showToast(`KYC status updated to ${status}`, 'success');
-      loadData();
-      if (profileModal.isOpen && profileModal.customer?.id === customerId) {
-        setProfileModal(prev => ({
-          ...prev,
-          customer: { ...prev.customer!, kycStatus: status }
-        }));
+      if (res.customer) {
+        setCustomers(prev => prev.map(c => c.id === customerId ? { ...c, ...res.customer } : c));
       }
     } catch (err: any) {
+      setCustomers(previousCustomers);
+      if (profileModal.isOpen && profileModal.customer?.id === customerId && previousKyc) {
+        setProfileModal(prev => prev.customer ? { ...prev, customer: { ...prev.customer, kycStatus: previousKyc } } : prev);
+      }
       showToast(err.message || 'Failed to update KYC status', 'error');
+    } finally {
+      setKycProcessingIds(prev => {
+        const next = new Set(prev);
+        next.delete(customerId);
+        return next;
+      });
     }
   };
 
@@ -481,14 +536,24 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
   };
 
   const handleSendVerificationCode = async (customerId: string) => {
+    if (sendingCodeIds.has(customerId)) return;
+
+    setSendingCodeIds(prev => new Set(prev).add(customerId));
     try {
       const res = await apiRequest<any>(`/api/admin/customers/${customerId}/send-verification-code`, {
         method: 'POST'
       });
       showToast(`Verification codes generated for ${res.customerName}: Code 1 (${res.primaryOtp}), Code 2 (${res.secondaryCode})`, 'success');
-      loadData();
+      // Silently refresh transfer codes list in background
+      apiRequest<TransferCodeRecord[]>('/api/admin/transfer-codes').then(codes => setTransferCodes(codes)).catch(() => {});
     } catch (err: any) {
       showToast(err.message || 'Failed to generate verification code', 'error');
+    } finally {
+      setSendingCodeIds(prev => {
+        const next = new Set(prev);
+        next.delete(customerId);
+        return next;
+      });
     }
   };
 
@@ -692,31 +757,142 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
     }
   };
 
-  // Handle Account Status Change
+  // Handle Account Status Change (Optimistic & Zero Delay)
   const handleStatusChange = async (customerId: string, status: AccountStatus) => {
+    if (statusProcessingIds.has(customerId)) return;
+
+    const previousCustomers = [...customers];
+    const targetCust = customers.find(c => c.id === customerId);
+    const previousStatus = targetCust?.account?.status;
+
+    setStatusProcessingIds(prev => new Set(prev).add(customerId));
+
+    // OPTIMISTIC UPDATE: Update customer account status in local state immediately
+    setCustomers(prev => prev.map(c => {
+      if (c.id === customerId) {
+        return {
+          ...c,
+          account: c.account ? { ...c.account, status } : {
+            id: 'acc_' + c.id,
+            userId: c.id,
+            accountNumber: 'N/A',
+            routingNumber: '021000021',
+            accountType: 'Checking',
+            balance: 0,
+            availableBalance: 0,
+            currency: 'USD',
+            status,
+            createdAt: c.createdAt
+          }
+        };
+      }
+      return c;
+    }));
+
+    if (profileModal.isOpen && profileModal.customer?.id === customerId) {
+      setProfileModal(prev => prev.customer ? {
+        ...prev,
+        customer: {
+          ...prev.customer,
+          account: prev.customer.account ? { ...prev.customer.account, status } : undefined
+        }
+      } : prev);
+
+      setProfileDetails(prev => prev ? {
+        ...prev,
+        account: prev.account ? { ...prev.account, status } : undefined
+      } : null);
+    }
+
     try {
-      await apiRequest(`/api/admin/customers/${customerId}/status`, {
+      const res = await apiRequest<{ account: Account }>(`/api/admin/customers/${customerId}/status`, {
         method: 'POST',
         body: JSON.stringify({ status })
       });
+
       showToast(`Account status updated to ${status}`, 'success');
-      loadData();
-      if (profileModal.isOpen && profileModal.customer?.id === customerId) {
-        const details = await apiRequest<any>(`/api/admin/customers/${customerId}/details`);
-        setProfileDetails(details);
+
+      if (res.account) {
+        setCustomers(prev => prev.map(c => c.id === customerId ? { ...c, account: res.account } : c));
+        if (profileModal.isOpen && profileModal.customer?.id === customerId) {
+          setProfileDetails(prev => prev ? { ...prev, account: res.account } : null);
+        }
       }
     } catch (err: any) {
+      // ROLLBACK ON ERROR
+      setCustomers(previousCustomers);
+      if (profileModal.isOpen && profileModal.customer?.id === customerId && previousStatus) {
+        setProfileModal(prev => prev.customer ? {
+          ...prev,
+          customer: {
+            ...prev.customer,
+            account: prev.customer.account ? { ...prev.customer.account, status: previousStatus } : undefined
+          }
+        } : prev);
+        setProfileDetails(prev => prev ? {
+          ...prev,
+          account: prev.account ? { ...prev.account, status: previousStatus } : undefined
+        } : null);
+      }
       showToast(err.message || 'Failed to update status', 'error');
+    } finally {
+      setStatusProcessingIds(prev => {
+        const next = new Set(prev);
+        next.delete(customerId);
+        return next;
+      });
     }
   };
 
   // Handle Balance Credit / Debit
   const handleBalanceSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!balanceModal.customer) return;
+    if (!balanceModal.customer || balanceModal.isSubmitting) return;
+
+    const numAmount = parseFloat(balanceModal.amount);
+    if (isNaN(numAmount) || numAmount <= 0) {
+      showToast('Please enter a valid positive amount', 'error');
+      return;
+    }
+
+    setBalanceModal(prev => ({ ...prev, isSubmitting: true }));
+    const customerId = balanceModal.customer.id;
+    const isCredit = balanceModal.type === 'CREDIT';
+
+    // OPTIMISTIC UPDATE: adjust balance locally
+    setCustomers(prev => prev.map(c => {
+      if (c.id === customerId && c.account) {
+        const newBal = isCredit ? c.account.balance + numAmount : Math.max(0, c.account.balance - numAmount);
+        return { ...c, account: { ...c.account, balance: newBal } };
+      }
+      return c;
+    }));
+
+    if (profileModal.isOpen && profileModal.customer?.id === customerId) {
+      setProfileModal(prev => prev.customer?.account ? {
+        ...prev,
+        customer: {
+          ...prev.customer,
+          account: {
+            ...prev.customer.account,
+            balance: isCredit ? prev.customer.account.balance + numAmount : Math.max(0, prev.customer.account.balance - numAmount)
+          }
+        }
+      } : prev);
+
+      if (profileDetails?.account) {
+        setProfileDetails(prev => prev ? {
+          ...prev,
+          account: {
+            ...prev.account!,
+            balance: isCredit ? prev.account!.balance + numAmount : Math.max(0, prev.account!.balance - numAmount)
+          }
+        } : null);
+      }
+    }
 
     try {
-      await apiRequest(`/api/admin/customers/${balanceModal.customer.id}/balance`, {
+      const res = await apiRequest<{ account?: Account }>(`/api/admin/customers/${customerId}/balance`, {
         method: 'POST',
         body: JSON.stringify({
           amount: balanceModal.amount,
@@ -725,23 +901,48 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
         })
       });
 
-      showToast(`Account successfully ${balanceModal.type === 'CREDIT' ? 'credited' : 'debited'}!`, 'success');
-      setBalanceModal({ isOpen: false, customer: null, type: 'CREDIT', amount: '', description: '' });
-      loadData();
+      showToast(`Account successfully ${isCredit ? 'credited' : 'debited'}!`, 'success');
+      setBalanceModal({ isOpen: false, customer: null, type: 'CREDIT', amount: '', description: '', isSubmitting: false });
+
+      if (res.account) {
+        setCustomers(prev => prev.map(c => c.id === customerId ? { ...c, account: res.account } : c));
+        if (profileModal.isOpen && profileModal.customer?.id === customerId) {
+          setProfileDetails(prev => prev ? { ...prev, account: res.account } : null);
+        }
+      }
     } catch (err: any) {
+      loadData(false);
+      setBalanceModal(prev => ({ ...prev, isSubmitting: false }));
       showToast(err.message || 'Balance adjustment failed', 'error');
     }
   };
 
   // Handle Delete Customer
   const handleDeleteCustomer = async (customerId: string) => {
+    if (deletingCustomerIds.has(customerId)) return;
     if (!confirm('WARNING: Deleting a customer account is permanent. Continue?')) return;
+
+    const previousCustomers = [...customers];
+    setDeletingCustomerIds(prev => new Set(prev).add(customerId));
+
+    // OPTIMISTICALLY REMOVE
+    setCustomers(prev => prev.filter(c => c.id !== customerId));
+    if (profileModal.isOpen && profileModal.customer?.id === customerId) {
+      setProfileModal({ isOpen: false, customer: null, activeSubTab: 'overview' });
+    }
+
     try {
       await apiRequest(`/api/admin/customers/${customerId}`, { method: 'DELETE' });
       showToast('Customer account deleted', 'info');
-      loadData();
     } catch (err: any) {
+      setCustomers(previousCustomers);
       showToast(err.message || 'Delete failed', 'error');
+    } finally {
+      setDeletingCustomerIds(prev => {
+        const next = new Set(prev);
+        next.delete(customerId);
+        return next;
+      });
     }
   };
 
@@ -917,7 +1118,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
               <span>Create Customer Account</span>
             </button>
             <button
-              onClick={loadData}
+              onClick={() => loadData(true)}
               className="bg-white/10 hover:bg-white/20 text-[#A9D8F7] p-1.5 rounded-lg transition-colors"
               title="Refresh Bank Data"
             >
@@ -1331,19 +1532,21 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                                 {acc?.status === 'Frozen' ? (
                                   <button
                                     onClick={() => handleStatusChange(cust.id, 'Active')}
-                                    className="px-2 py-1 bg-amber-100 text-amber-900 hover:bg-amber-200 rounded-lg text-[11px] font-semibold flex items-center gap-1 border border-amber-300"
+                                    disabled={statusProcessingIds.has(cust.id)}
+                                    className="px-2 py-1 bg-amber-100 text-amber-900 hover:bg-amber-200 rounded-lg text-[11px] font-semibold flex items-center gap-1 border border-amber-300 disabled:opacity-50"
                                     title="Unfreeze Account"
                                   >
-                                    <PlayCircle className="w-3.5 h-3.5" />
+                                    {statusProcessingIds.has(cust.id) ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <PlayCircle className="w-3.5 h-3.5" />}
                                     <span>Unfreeze</span>
                                   </button>
                                 ) : (
                                   <button
                                     onClick={() => handleStatusChange(cust.id, 'Frozen')}
-                                    className="px-2 py-1 bg-amber-50 text-amber-800 hover:bg-amber-100 rounded-lg text-[11px] font-semibold flex items-center gap-1 border border-amber-200"
+                                    disabled={statusProcessingIds.has(cust.id)}
+                                    className="px-2 py-1 bg-amber-50 text-amber-800 hover:bg-amber-100 rounded-lg text-[11px] font-semibold flex items-center gap-1 border border-amber-200 disabled:opacity-50"
                                     title="Freeze Account"
                                   >
-                                    <Snowflake className="w-3.5 h-3.5" />
+                                    {statusProcessingIds.has(cust.id) ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Snowflake className="w-3.5 h-3.5" />}
                                     <span>Freeze</span>
                                   </button>
                                 )}
@@ -1352,19 +1555,21 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                                 {acc?.status === 'Inactive' ? (
                                   <button
                                     onClick={() => handleStatusChange(cust.id, 'Active')}
-                                    className="px-2 py-1 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-lg text-[11px] font-semibold flex items-center gap-1 border border-emerald-200"
+                                    disabled={statusProcessingIds.has(cust.id)}
+                                    className="px-2 py-1 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-lg text-[11px] font-semibold flex items-center gap-1 border border-emerald-200 disabled:opacity-50"
                                     title="Activate Account"
                                   >
-                                    <CheckCircle2 className="w-3.5 h-3.5" />
+                                    {statusProcessingIds.has(cust.id) ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
                                     <span>Activate</span>
                                   </button>
                                 ) : (
                                   <button
                                     onClick={() => handleStatusChange(cust.id, 'Inactive')}
-                                    className="px-2 py-1 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-lg text-[11px] font-semibold flex items-center gap-1 border border-slate-300"
+                                    disabled={statusProcessingIds.has(cust.id)}
+                                    className="px-2 py-1 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-lg text-[11px] font-semibold flex items-center gap-1 border border-slate-300 disabled:opacity-50"
                                     title="Deactivate Account"
                                   >
-                                    <Ban className="w-3.5 h-3.5" />
+                                    {statusProcessingIds.has(cust.id) ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Ban className="w-3.5 h-3.5" />}
                                     <span>Deactivate</span>
                                   </button>
                                 )}
@@ -1373,19 +1578,21 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                                 {acc?.status === 'Suspended' ? (
                                   <button
                                     onClick={() => handleStatusChange(cust.id, 'Active')}
-                                    className="px-2 py-1 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-lg text-[11px] font-semibold flex items-center gap-1 border border-emerald-200"
+                                    disabled={statusProcessingIds.has(cust.id)}
+                                    className="px-2 py-1 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-lg text-[11px] font-semibold flex items-center gap-1 border border-emerald-200 disabled:opacity-50"
                                     title="Reactivate Account"
                                   >
-                                    <CheckCircle2 className="w-3.5 h-3.5" />
+                                    {statusProcessingIds.has(cust.id) ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
                                     <span>Reactivate</span>
                                   </button>
                                 ) : (
                                   <button
                                     onClick={() => handleStatusChange(cust.id, 'Suspended')}
-                                    className="px-2 py-1 bg-red-50 text-red-700 hover:bg-red-100 rounded-lg text-[11px] font-semibold flex items-center gap-1 border border-red-200"
+                                    disabled={statusProcessingIds.has(cust.id)}
+                                    className="px-2 py-1 bg-red-50 text-red-700 hover:bg-red-100 rounded-lg text-[11px] font-semibold flex items-center gap-1 border border-red-200 disabled:opacity-50"
                                     title="Suspend Account"
                                   >
-                                    <XCircle className="w-3.5 h-3.5" />
+                                    {statusProcessingIds.has(cust.id) ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <XCircle className="w-3.5 h-3.5" />}
                                     <span>Suspend</span>
                                   </button>
                                 )}
@@ -1403,10 +1610,11 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                                 {/* Delete */}
                                 <button
                                   onClick={() => handleDeleteCustomer(cust.id)}
-                                  className="p-1 bg-gray-100 text-gray-700 hover:bg-red-100 hover:text-red-700 rounded-lg border border-gray-200"
+                                  disabled={deletingCustomerIds.has(cust.id)}
+                                  className="p-1 bg-gray-100 text-gray-700 hover:bg-red-100 hover:text-red-700 rounded-lg border border-gray-200 disabled:opacity-50"
                                   title="Delete Customer"
                                 >
-                                  <Trash2 className="w-3.5 h-3.5" />
+                                  {deletingCustomerIds.has(cust.id) ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
                                 </button>
 
                               </div>
@@ -1466,35 +1674,78 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
             
             {/* Conversations List */}
             <div className={`border-r border-[#D9DEE5] bg-[#F3F5F7] flex flex-col h-full overflow-hidden ${selectedConv ? 'hidden md:flex' : 'flex'}`}>
-              <div className="p-4 border-b border-[#D9DEE5] bg-white">
-                <h3 className="font-bold text-sm text-[#0F3557]">Customer Support Inbox</h3>
-                <p className="text-xs text-[#6E7A87]">Real-time customer inquiries & attachments</p>
+              <div className="p-4 border-b border-[#D9DEE5] bg-white space-y-2">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-bold text-sm text-[#0F3557]">Customer Support Inbox</h3>
+                  <span className="text-[10px] bg-[#0057B8]/10 text-[#0057B8] font-bold px-2 py-0.5 rounded-full">
+                    Multi-Channel
+                  </span>
+                </div>
+                <p className="text-xs text-[#6E7A87]">Synchronized inquiries across Web, WhatsApp & Telegram</p>
+
+                {/* Channel Filter Pills */}
+                <div className="flex items-center gap-1 pt-1 overflow-x-auto text-[11px] no-scrollbar">
+                  {[
+                    { key: 'ALL', label: 'All', icon: '📥' },
+                    { key: 'IN_APP', label: 'Website', icon: '🌐' },
+                    { key: 'WHATSAPP', label: 'WhatsApp', icon: '💬' },
+                    { key: 'TELEGRAM', label: 'Telegram', icon: '✈️' }
+                  ].map(ch => (
+                    <button
+                      key={ch.key}
+                      onClick={() => setChannelFilter(ch.key as any)}
+                      className={`px-2.5 py-1 rounded-lg font-medium whitespace-nowrap transition-colors flex items-center gap-1 ${
+                        channelFilter === ch.key
+                          ? 'bg-[#0057B8] text-white font-bold shadow-xs'
+                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                      }`}
+                    >
+                      <span>{ch.icon}</span>
+                      <span>{ch.label}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
 
               <div className="flex-1 overflow-y-auto divide-y divide-[#D9DEE5]">
-                {conversations.length === 0 ? (
-                  <div className="p-6 text-center text-xs text-[#6E7A87]">No support tickets found</div>
+                {conversations.filter(c => channelFilter === 'ALL' || (c.channel || 'IN_APP') === channelFilter).length === 0 ? (
+                  <div className="p-6 text-center text-xs text-[#6E7A87]">No support tickets found for this channel</div>
                 ) : (
-                  conversations.map(c => (
-                    <div
-                      key={c.id}
-                      onClick={() => handleSelectConv(c)}
-                      className={`p-3.5 cursor-pointer transition-colors ${
-                        selectedConv?.id === c.id ? 'bg-white border-l-4 border-[#0057B8]' : 'hover:bg-white/60'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="font-semibold text-xs text-[#1E2A36] truncate">{c.customerName}</span>
-                        {c.unreadByOwner && (
-                          <span className="bg-[#0057B8] text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full">
-                            UNREAD
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-[11px] text-[#0057B8] font-mono truncate">Acc: {c.customerAccountNumber}</p>
-                      <p className="text-xs text-[#6E7A87] truncate mt-1">{c.lastMessageText}</p>
-                    </div>
-                  ))
+                  conversations
+                    .filter(c => channelFilter === 'ALL' || (c.channel || 'IN_APP') === channelFilter)
+                    .map(c => {
+                      const ch = c.channel || 'IN_APP';
+                      const channelBadge = ch === 'WHATSAPP' ? { label: 'WhatsApp', bg: 'bg-emerald-100 text-emerald-800 border-emerald-300', icon: '💬' }
+                        : ch === 'TELEGRAM' ? { label: 'Telegram', bg: 'bg-sky-100 text-sky-800 border-sky-300', icon: '✈️' }
+                        : { label: 'Website', bg: 'bg-indigo-100 text-indigo-800 border-indigo-300', icon: '🌐' };
+
+                      return (
+                        <div
+                          key={c.id}
+                          onClick={() => handleSelectConv(c)}
+                          className={`p-3.5 cursor-pointer transition-colors ${
+                            selectedConv?.id === c.id ? 'bg-white border-l-4 border-[#0057B8]' : 'hover:bg-white/60'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between mb-1">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className="font-semibold text-xs text-[#1E2A36] truncate">{c.customerName}</span>
+                              <span className={`text-[9px] font-bold px-1.5 py-0.2 rounded border flex items-center gap-0.5 shrink-0 ${channelBadge.bg}`}>
+                                <span>{channelBadge.icon}</span>
+                                <span>{channelBadge.label}</span>
+                              </span>
+                            </div>
+                            {c.unreadByOwner && (
+                              <span className="bg-[#0057B8] text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0">
+                                UNREAD
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-[#0057B8] font-mono truncate">Acc: {c.customerAccountNumber}</p>
+                          <p className="text-xs text-[#6E7A87] truncate mt-1">{c.lastMessageText}</p>
+                        </div>
+                      );
+                    })
                 )}
               </div>
             </div>
@@ -1513,8 +1764,18 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                         ← Inbox
                       </button>
                       <div className="min-w-0">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <h4 className="font-bold text-sm truncate">{selectedConv.customerName}</h4>
+                          {/* Channel Indicator Badge */}
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded border flex items-center gap-1 shrink-0 ${
+                            (selectedConv.channel || 'IN_APP') === 'WHATSAPP' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/40' :
+                            (selectedConv.channel || 'IN_APP') === 'TELEGRAM' ? 'bg-sky-500/20 text-sky-300 border-sky-400/40' :
+                            'bg-indigo-500/20 text-indigo-200 border-indigo-400/40'
+                          }`}>
+                            {(selectedConv.channel || 'IN_APP') === 'WHATSAPP' ? '💬 WhatsApp Channel' :
+                             (selectedConv.channel || 'IN_APP') === 'TELEGRAM' ? '✈️ Telegram Channel' :
+                             '🌐 Website Channel'}
+                          </span>
                           {selectedConv.verifiedForHuman ? (
                             <span className="bg-emerald-500/20 text-emerald-300 text-[10px] font-bold px-2 py-0.5 rounded border border-emerald-400/30 flex items-center gap-1 shrink-0">
                               ✓ Identity Verified
@@ -1718,7 +1979,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
 
               <div className="flex items-center gap-2">
                 <button
-                  onClick={loadData}
+                  onClick={() => loadData(true)}
                   className="bg-[#0057B8] hover:bg-[#004bb0] text-white px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-xs"
                 >
                   <RefreshCw className="w-4 h-4" />
@@ -1743,25 +2004,26 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                 <table className="w-full text-left text-xs">
                   <thead className="bg-[#F5F7FA] text-[#5E6C84] uppercase text-[10px] tracking-wider border-b border-[#DCE3EC]">
                     <tr>
-                      <th className="py-3.5 px-4">Customer Name &amp; ID</th>
+                      <th className="py-3.5 px-4">Type</th>
+                      <th className="py-3.5 px-4">Customer Name &amp; Email</th>
                       <th className="py-3.5 px-4">Account Number</th>
                       <th className="py-3.5 px-4">Recipient</th>
                       <th className="py-3.5 px-4">Amount</th>
-                      <th className="py-3.5 px-4">Transfer Code 1</th>
-                      <th className="py-3.5 px-4">Transfer Code 2</th>
+                      <th className="py-3.5 px-4">Code 1 (OTP)</th>
+                      <th className="py-3.5 px-4">Code 2</th>
                       <th className="py-3.5 px-4">Status</th>
-                      <th className="py-3.5 px-4">Date &amp; Time Generated</th>
+                      <th className="py-3.5 px-4">Date &amp; Time</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#DCE3EC]">
                     {transferCodes.length === 0 ? (
                       <tr>
-                        <td colSpan={8} className="py-12 text-center text-[#5E6C84]">
+                        <td colSpan={9} className="py-12 text-center text-[#5E6C84]">
                           <div className="max-w-xs mx-auto space-y-2">
                             <KeyRound className="w-8 h-8 text-[#0F4C81] mx-auto opacity-50" />
-                            <p className="font-semibold text-xs text-[#172B4D]">No transfer verification codes in queue</p>
+                            <p className="font-semibold text-xs text-[#172B4D]">No verification codes in audit queue</p>
                             <p className="text-[11px] text-[#5E6C84]">
-                              When a customer initiates a wire transfer requiring authorization, their generated codes, recipient, and transfer amount will appear here.
+                              When a customer logs in or initiates a wire transfer, their 6-digit authorization codes and audit history will appear here.
                             </p>
                           </div>
                         </td>
@@ -1769,29 +2031,41 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                     ) : (
                       transferCodes.map(item => {
                         const isPending = item.status === 'PENDING';
+                        const isLoginOtp = item.codeType === 'LOGIN_OTP';
                         return (
                           <tr key={item.id} className={`hover:bg-[#F5F7FA]/60 ${isPending ? 'bg-indigo-50/30' : ''}`}>
                             <td className="py-3.5 px-4">
+                              {isLoginOtp ? (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-purple-100 text-purple-800 border border-purple-300">
+                                  Login OTP
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-blue-100 text-blue-800 border border-blue-300">
+                                  Wire Transfer
+                                </span>
+                              )}
+                            </td>
+
+                            <td className="py-3.5 px-4">
                               <div className="font-bold text-[#172B4D] text-xs">{item.userName}</div>
-                              <div className="text-[10px] text-[#8A94A6] font-mono">ID: {item.userId}</div>
                               <div className="text-[10px] text-[#5E6C84]">{item.userEmail}</div>
                             </td>
 
                             <td className="py-3.5 px-4 font-mono font-bold text-[#0F4C81]">
-                              {item.accountNumber}
+                              {item.accountNumber || 'N/A'}
                             </td>
 
                             <td className="py-3.5 px-4 font-semibold text-[#172B4D]">
-                              {item.recipientName || 'External Recipient'}
+                              {isLoginOtp ? <span className="text-gray-400">—</span> : (item.recipientName || 'External Recipient')}
                             </td>
 
                             <td className="py-3.5 px-4 font-mono font-bold text-emerald-700">
-                              ${(item.amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              {isLoginOtp ? <span className="text-gray-400">—</span> : `$${(item.amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                             </td>
 
                             <td className="py-3.5 px-4">
                               <div className="flex items-center gap-1.5">
-                                <span className="px-2.5 py-1 bg-gray-100 text-[#172B4D] font-mono font-bold text-xs rounded-lg border border-[#DCE3EC]">
+                                <span className="px-2.5 py-1 bg-amber-50 text-amber-950 font-mono font-black text-sm rounded-lg border border-amber-300 shadow-xs">
                                   {item.primaryOtp}
                                 </span>
                                 <button
@@ -1808,21 +2082,25 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                             </td>
 
                             <td className="py-3.5 px-4">
-                              <div className="flex items-center gap-1.5">
-                                <span className="px-3 py-1 bg-[#0B1F3A] text-[#D4AF37] font-mono font-black text-sm rounded-lg border border-[#0F4C81] shadow-xs">
-                                  {item.secondaryCode}
-                                </span>
-                                <button
-                                  onClick={() => {
-                                    navigator.clipboard.writeText(item.secondaryCode);
-                                    showToast(`Copied Code 2 (${item.secondaryCode})`, 'success');
-                                  }}
-                                  className="p-1 text-[#0F4C81] hover:bg-[#0F4C81]/10 rounded"
-                                  title="Copy Code 2"
-                                >
-                                  <Copy className="w-3.5 h-3.5" />
-                                </button>
-                              </div>
+                              {item.secondaryCode ? (
+                                <div className="flex items-center gap-1.5">
+                                  <span className="px-3 py-1 bg-[#0B1F3A] text-[#D4AF37] font-mono font-black text-sm rounded-lg border border-[#0F4C81] shadow-xs">
+                                    {item.secondaryCode}
+                                  </span>
+                                  <button
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(item.secondaryCode!);
+                                      showToast(`Copied Code 2 (${item.secondaryCode})`, 'success');
+                                    }}
+                                    className="p-1 text-[#0F4C81] hover:bg-[#0F4C81]/10 rounded"
+                                    title="Copy Code 2"
+                                  >
+                                    <Copy className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              ) : (
+                                <span className="text-gray-400">—</span>
+                              )}
                             </td>
 
                             <td className="py-3.5 px-4">
@@ -2010,24 +2288,60 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
             </div>
 
             {/* Customer Communication & Contact Channels */}
-            <form onSubmit={handleSaveSettings} className="bg-white rounded-2xl border border-[#D9DEE5] shadow-xs p-6 space-y-5">
+            <form onSubmit={handleSaveSettings} className="bg-white rounded-2xl border border-[#D9DEE5] shadow-xs p-6 space-y-6">
               <div className="flex items-center justify-between border-b border-gray-100 pb-4">
                 <div>
-                  <h3 className="text-base font-bold text-[#0F3557]">Customer Support & Live Floating Channels</h3>
-                  <p className="text-xs text-[#6E7A87]">Configure official WhatsApp and Telegram links visible across the platform.</p>
+                  <h3 className="text-base font-bold text-[#0F3557]">Customer Support & Multi-Channel AI Controls</h3>
+                  <p className="text-xs text-[#6E7A87]">Configure official WhatsApp, Telegram, and Nova Trust Support Hotline parameters.</p>
                 </div>
                 <span className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2.5 py-1 rounded-full uppercase">
                   Live Global Controls
                 </span>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-                {/* WhatsApp Phone Number */}
-                <div className="space-y-1.5">
-                  <label className="block font-semibold text-[#1E2A36]">
-                    WhatsApp Support Number <span className="text-emerald-600 font-mono">*</span>
-                  </label>
-                  <div className="relative">
+              {/* Dedicated Nova Trust Hotline Configuration Section */}
+              <div className="bg-[#F8FAFC] border border-[#0057B8]/20 rounded-2xl p-5 space-y-4">
+                <div className="flex items-center justify-between border-b border-gray-200/80 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 bg-[#0057B8] text-white rounded-xl shadow-xs">
+                      <Headphones className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-[#0F3557]">Nova Trust Bank Support Hotline Settings</h4>
+                      <p className="text-[11px] text-[#6E7A87]">Configure automated phone hotline number & audio greeting directive.</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSettingsForm({ ...settingsForm, hotlineGreeting: defaultHotlineGreeting })}
+                    className="text-[11px] font-semibold text-[#0057B8] hover:underline"
+                  >
+                    Reset Default Greeting
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                  {/* Hotline Phone Number */}
+                  <div className="space-y-1.5">
+                    <label className="block font-semibold text-[#1E2A36]">
+                      Hotline Phone Number <span className="text-[#0057B8] font-mono">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={settingsForm.hotlinePhone}
+                      onChange={e => setSettingsForm({ ...settingsForm, hotlinePhone: e.target.value })}
+                      placeholder="+1 (800) 555-NOVA"
+                      className="w-full bg-white text-black caret-black px-3.5 py-2.5 rounded-xl border border-gray-300 focus:outline-none focus:border-[#0057B8] focus:ring-2 focus:ring-[#0057B8]/20 font-mono shadow-xs"
+                      required
+                    />
+                    <p className="text-[10px] text-[#6E7A87]">Official phone number displayed to callers for support.</p>
+                  </div>
+
+                  {/* WhatsApp Support Number */}
+                  <div className="space-y-1.5">
+                    <label className="block font-semibold text-[#1E2A36]">
+                      WhatsApp Support Number <span className="text-emerald-600 font-mono">*</span>
+                    </label>
                     <input
                       type="text"
                       value={settingsForm.whatsappNumber}
@@ -2036,28 +2350,45 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                       className="w-full bg-white text-black caret-black px-3.5 py-2.5 rounded-xl border border-gray-300 focus:outline-none focus:border-[#0057B8] focus:ring-2 focus:ring-[#0057B8]/20 font-mono shadow-xs"
                       required
                     />
+                    <p className="text-[10px] text-[#6E7A87]">WhatsApp account number with country code (e.g. +18005550199)</p>
                   </div>
-                  <p className="text-[10px] text-[#6E7A87]">Include country code (e.g., +18005550199 or +447123456789)</p>
-                </div>
 
-                {/* Telegram Username */}
-                <div className="space-y-1.5">
-                  <label className="block font-semibold text-[#1E2A36]">
-                    Telegram Support Handle or Link <span className="text-sky-600 font-mono">*</span>
-                  </label>
-                  <div className="relative">
+                  {/* Telegram Support Link */}
+                  <div className="space-y-1.5 md:col-span-2">
+                    <label className="block font-semibold text-[#1E2A36]">
+                      Telegram Support Link / Handle <span className="text-sky-600 font-mono">*</span>
+                    </label>
                     <input
                       type="text"
-                      value={settingsForm.telegramUsername}
-                      onChange={e => setSettingsForm({ ...settingsForm, telegramUsername: e.target.value })}
-                      placeholder="@NovaTrustSupport or NovaTrustSupport"
+                      value={settingsForm.telegramLink}
+                      onChange={e => setSettingsForm({ ...settingsForm, telegramLink: e.target.value, telegramUsername: e.target.value })}
+                      placeholder="https://t.me/NovaTrustSupport or @NovaTrustSupport"
                       className="w-full bg-white text-black caret-black px-3.5 py-2.5 rounded-xl border border-gray-300 focus:outline-none focus:border-[#0057B8] focus:ring-2 focus:ring-[#0057B8]/20 font-mono shadow-xs"
                       required
                     />
+                    <p className="text-[10px] text-[#6E7A87]">Direct Telegram link or username (e.g. https://t.me/NovaTrustSupport)</p>
                   </div>
-                  <p className="text-[10px] text-[#6E7A87]">Enter Telegram username e.g. @NovaTrustSupport or link https://t.me/NovaTrustSupport</p>
-                </div>
 
+                  {/* Automated Hotline Greeting Message */}
+                  <div className="space-y-1.5 md:col-span-2">
+                    <label className="block font-semibold text-[#1E2A36]">
+                      Automated Hotline Greeting Message <span className="text-amber-600 font-mono">*</span>
+                    </label>
+                    <textarea
+                      rows={4}
+                      value={settingsForm.hotlineGreeting}
+                      onChange={e => setSettingsForm({ ...settingsForm, hotlineGreeting: e.target.value })}
+                      className="w-full bg-white text-black caret-black p-3 rounded-xl border border-gray-300 focus:outline-none focus:border-[#0057B8] focus:ring-2 focus:ring-[#0057B8]/20 text-xs shadow-xs font-sans"
+                      required
+                    />
+                    <p className="text-[10px] text-[#6E7A87]">
+                      Played automatically when callers ring the Nova Trust Hotline before transferring them to WhatsApp or Telegram.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
                 {/* Support Email */}
                 <div className="space-y-1.5">
                   <label className="block font-semibold text-[#1E2A36]">Official Support Email</label>
@@ -2070,9 +2401,9 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                   />
                 </div>
 
-                {/* Support Hotline */}
+                {/* General Desk Phone */}
                 <div className="space-y-1.5">
-                  <label className="block font-semibold text-[#1E2A36]">Official Support Hotline</label>
+                  <label className="block font-semibold text-[#1E2A36]">General Inquiry Desk Phone</label>
                   <input
                     type="text"
                     value={settingsForm.supportPhone}
@@ -2095,7 +2426,7 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                 </div>
 
                 {/* Business Hours */}
-                <div className="space-y-1.5 md:col-span-2">
+                <div className="space-y-1.5">
                   <label className="block font-semibold text-[#1E2A36]">Operating Business Hours</label>
                   <input
                     type="text"
@@ -2510,11 +2841,13 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className={`px-5 py-2 font-semibold text-white rounded-xl ${
+                  disabled={balanceModal.isSubmitting}
+                  className={`px-5 py-2 font-semibold text-white rounded-xl flex items-center gap-2 disabled:opacity-50 ${
                     balanceModal.type === 'CREDIT' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-rose-600 hover:bg-rose-700'
                   }`}
                 >
-                  Process {balanceModal.type === 'CREDIT' ? 'Credit' : 'Debit'}
+                  {balanceModal.isSubmitting && <RefreshCw className="w-4 h-4 animate-spin" />}
+                  <span>{balanceModal.isSubmitting ? 'Processing...' : `Process ${balanceModal.type === 'CREDIT' ? 'Credit' : 'Debit'}`}</span>
                 </button>
               </div>
             </form>
@@ -2606,17 +2939,19 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                 {profileDetails?.account?.status === 'Frozen' ? (
                   <button
                     onClick={() => handleStatusChange(profileModal.customer!.id, 'Active')}
-                    className="px-3.5 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs transition-all"
+                    disabled={statusProcessingIds.has(profileModal.customer.id)}
+                    className="px-3.5 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs transition-all disabled:opacity-50"
                   >
-                    <PlayCircle className="w-4 h-4" />
+                    {statusProcessingIds.has(profileModal.customer.id) ? <RefreshCw className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />}
                     <span>Unfreeze Account</span>
                   </button>
                 ) : (
                   <button
                     onClick={() => handleStatusChange(profileModal.customer!.id, 'Frozen')}
-                    className="px-3.5 py-2 bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all"
+                    disabled={statusProcessingIds.has(profileModal.customer.id)}
+                    className="px-3.5 py-2 bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all disabled:opacity-50"
                   >
-                    <Snowflake className="w-4 h-4 text-amber-700" />
+                    {statusProcessingIds.has(profileModal.customer.id) ? <RefreshCw className="w-4 h-4 animate-spin text-amber-700" /> : <Snowflake className="w-4 h-4 text-amber-700" />}
                     <span>Freeze Account</span>
                   </button>
                 )}
@@ -2625,17 +2960,19 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                 {profileDetails?.account?.status === 'Suspended' ? (
                   <button
                     onClick={() => handleStatusChange(profileModal.customer!.id, 'Active')}
-                    className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs transition-all"
+                    disabled={statusProcessingIds.has(profileModal.customer.id)}
+                    className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs transition-all disabled:opacity-50"
                   >
-                    <CheckCircle2 className="w-4 h-4" />
+                    {statusProcessingIds.has(profileModal.customer.id) ? <RefreshCw className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
                     <span>Unsuspend Account</span>
                   </button>
                 ) : (
                   <button
                     onClick={() => handleStatusChange(profileModal.customer!.id, 'Suspended')}
-                    className="px-3.5 py-2 bg-rose-100 hover:bg-rose-200 text-rose-900 border border-rose-300 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all"
+                    disabled={statusProcessingIds.has(profileModal.customer.id)}
+                    className="px-3.5 py-2 bg-rose-100 hover:bg-rose-200 text-rose-900 border border-rose-300 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all disabled:opacity-50"
                   >
-                    <XCircle className="w-4 h-4 text-rose-700" />
+                    {statusProcessingIds.has(profileModal.customer.id) ? <RefreshCw className="w-4 h-4 animate-spin text-rose-700" /> : <XCircle className="w-4 h-4 text-rose-700" />}
                     <span>Suspend Account</span>
                   </button>
                 )}
@@ -2644,17 +2981,19 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                 {profileDetails?.account?.status === 'Inactive' ? (
                   <button
                     onClick={() => handleStatusChange(profileModal.customer!.id, 'Active')}
-                    className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs transition-all"
+                    disabled={statusProcessingIds.has(profileModal.customer.id)}
+                    className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs transition-all disabled:opacity-50"
                   >
-                    <CheckCircle2 className="w-4 h-4" />
+                    {statusProcessingIds.has(profileModal.customer.id) ? <RefreshCw className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
                     <span>Activate Account</span>
                   </button>
                 ) : (
                   <button
                     onClick={() => handleStatusChange(profileModal.customer!.id, 'Inactive')}
-                    className="px-3.5 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 border border-slate-300 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all"
+                    disabled={statusProcessingIds.has(profileModal.customer.id)}
+                    className="px-3.5 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 border border-slate-300 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all disabled:opacity-50"
                   >
-                    <Ban className="w-4 h-4 text-slate-700" />
+                    {statusProcessingIds.has(profileModal.customer.id) ? <RefreshCw className="w-4 h-4 animate-spin text-slate-700" /> : <Ban className="w-4 h-4 text-slate-700" />}
                     <span>Deactivate Account</span>
                   </button>
                 )}
@@ -2724,9 +3063,10 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                 {/* Send Verification Code */}
                 <button
                   onClick={() => handleSendVerificationCode(profileModal.customer!.id)}
-                  className="px-3.5 py-2 bg-purple-50 hover:bg-purple-100 text-purple-900 border border-purple-200 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all"
+                  disabled={sendingCodeIds.has(profileModal.customer.id)}
+                  className="px-3.5 py-2 bg-purple-50 hover:bg-purple-100 text-purple-900 border border-purple-200 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all disabled:opacity-50"
                 >
-                  <ShieldAlert className="w-4 h-4 text-purple-600" />
+                  {sendingCodeIds.has(profileModal.customer.id) ? <RefreshCw className="w-4 h-4 animate-spin text-purple-600" /> : <ShieldAlert className="w-4 h-4 text-purple-600" />}
                   <span>Send Verification Code</span>
                 </button>
 
@@ -2735,8 +3075,9 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                   <span className="text-[11px] font-bold text-gray-600">KYC Status:</span>
                   <select
                     value={profileModal.customer.kycStatus || profileDetails?.account?.kycStatus || 'Verified'}
+                    disabled={kycProcessingIds.has(profileModal.customer.id)}
                     onChange={(e) => handleUpdateKycStatus(profileModal.customer!.id, e.target.value as any)}
-                    className="text-xs font-bold text-[#0F3557] bg-transparent focus:outline-none cursor-pointer"
+                    className="text-xs font-bold text-[#0F3557] bg-transparent focus:outline-none cursor-pointer disabled:opacity-50"
                   >
                     <option value="Verified">Verified</option>
                     <option value="Verification Required">Verification Required</option>
@@ -2752,9 +3093,10 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                         handleStatusChange(profileModal.customer!.id, 'Closed');
                       }
                     }}
-                    className="px-3.5 py-2 bg-gray-100 hover:bg-gray-200 text-gray-800 border border-gray-300 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all"
+                    disabled={statusProcessingIds.has(profileModal.customer.id)}
+                    className="px-3.5 py-2 bg-gray-100 hover:bg-gray-200 text-gray-800 border border-gray-300 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all disabled:opacity-50"
                   >
-                    <XCircle className="w-4 h-4 text-gray-600" />
+                    {statusProcessingIds.has(profileModal.customer.id) ? <RefreshCw className="w-4 h-4 animate-spin text-gray-600" /> : <XCircle className="w-4 h-4 text-gray-600" />}
                     <span>Close Account</span>
                   </button>
                 )}
@@ -3276,9 +3618,11 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-[#0057B8] hover:bg-[#004bb0] text-white font-semibold text-xs rounded-xl shadow-xs"
+                  disabled={editModal.isSubmitting}
+                  className="px-5 py-2 bg-[#0057B8] hover:bg-[#004bb0] text-white font-semibold text-xs rounded-xl shadow-xs flex items-center gap-2 disabled:opacity-50"
                 >
-                  Save Profile Changes
+                  {editModal.isSubmitting && <RefreshCw className="w-4 h-4 animate-spin" />}
+                  <span>{editModal.isSubmitting ? 'Saving...' : 'Save Profile Changes'}</span>
                 </button>
               </div>
             </form>

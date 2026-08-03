@@ -1,8 +1,9 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import pg from 'pg';
 import { initializeApp, getApps } from 'firebase/app';
-import { getFirestore, doc, getDoc, setDoc } from 'firebase/firestore';
+import { getFirestore, doc, getDoc, setDoc, terminate, disableNetwork } from 'firebase/firestore';
 import {
   User,
   Account,
@@ -40,11 +41,38 @@ interface DBData {
 let DATA_DIR = path.join(process.cwd(), 'data');
 let DB_FILE = path.join(DATA_DIR, 'db.json');
 
-// Initialize Firebase Firestore for optional database-backed persistence
+// Initialize PostgreSQL pool if DATABASE_URL or POSTGRES_URL is set
+let pgPool: pg.Pool | null = null;
+const pgDbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.DATABASE_PRIVATE_URL;
+if (pgDbUrl) {
+  try {
+    pgPool = new pg.Pool({
+      connectionString: pgDbUrl,
+      ssl: pgDbUrl.includes('localhost') || pgDbUrl.includes('127.0.0.1') ? false : { rejectUnauthorized: false }
+    });
+    console.log('PostgreSQL database connection pool initialized.');
+  } catch (err) {
+    console.warn('Could not initialize PostgreSQL pool:', err);
+    pgPool = null;
+  }
+}
+
+// Initialize Firebase Firestore for database persistence
 let firestoreDb: any = null;
+
+function disableFirestore(db: any) {
+  if (!db && !firestoreDb) return;
+  const target = db || firestoreDb;
+  firestoreDb = null;
+  try {
+    disableNetwork(target).catch(() => {});
+    terminate(target).catch(() => {});
+  } catch (_) {}
+}
+
 try {
   const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
-  if (fs.existsSync(configPath) && process.env.ENABLE_FIRESTORE === 'true') {
+  if (fs.existsSync(configPath)) {
     const firebaseConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
     firestoreDb = getFirestore(app, firebaseConfig.firestoreDatabaseId || undefined);
@@ -97,12 +125,14 @@ function loadDB(): DBData {
       conversations: [],
       messages: [],
       auditLogs: [],
-      otps: []
+      otps: [],
+      beneficiaries: [],
+      transferCodes: []
     };
   }
 
   // If DB has owner user, permanently mark as initialized
-  if (loadedData.users.some(u => u.role === 'OWNER')) {
+  if (loadedData.users && loadedData.users.some(u => u.role === 'OWNER')) {
     loadedData.isInitialized = true;
   }
 
@@ -124,45 +154,107 @@ export class BankStore {
 
   constructor() {
     this.data = loadDB();
-    this.initFirestoreSync();
+    this.initPersistence().catch(err => {
+      console.warn('Initial background persistence loading encountered an error:', err);
+    });
   }
 
-  private async initFirestoreSync() {
-    if (!firestoreDb) return;
-    try {
-      const configRef = doc(firestoreDb, 'system', 'config');
-      const snap = await getDoc(configRef);
-      if (snap.exists() && snap.data().isInitialized) {
-        this.data.isInitialized = true;
-        this.persist();
-      } else if (this.isInitialized()) {
-        const owner = this.getOwner();
-        await setDoc(configRef, {
-          isInitialized: true,
-          hasOwner: true,
-          ownerEmail: owner ? owner.email : null,
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
+  public async initPersistence(): Promise<void> {
+    // 1. Check PostgreSQL first if available
+    if (pgPool) {
+      try {
+        await pgPool.query(`
+          CREATE TABLE IF NOT EXISTS bank_store (
+            id VARCHAR(50) PRIMARY KEY,
+            data JSONB NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          );
+        `);
+        const res = await pgPool.query(`SELECT data FROM bank_store WHERE id = 'main'`);
+        if (res.rows.length > 0 && res.rows[0].data) {
+          const pgData = res.rows[0].data as DBData;
+          if (pgData && Array.isArray(pgData.users) && pgData.users.length > 0) {
+            this.data = { ...this.data, ...pgData };
+            console.log(`[POSTGRES] Loaded persistent data: ${this.data.users.length} users, ${this.data.accounts.length} accounts, ${this.data.transactions.length} transactions.`);
+            saveDB(this.data);
+            return;
+          }
+        }
+      } catch (err) {
+        console.warn('PostgreSQL table init or data load failed:', err);
       }
-    } catch (err: any) {
-      console.warn('Firestore initial sync error (disabling Firestore sync):', err?.message || err);
-      firestoreDb = null;
+    }
+
+    // 2. Check Firestore with 2.5s timeout guard
+    if (firestoreDb) {
+      try {
+        const docRef = doc(firestoreDb, 'bank_data', 'main');
+        const snap: any = await Promise.race([
+          getDoc(docRef),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Firestore read timeout')), 2500))
+        ]);
+        if (snap && snap.exists && snap.exists() && snap.data()?.data) {
+          const fsData = snap.data().data as DBData;
+          if (fsData && Array.isArray(fsData.users) && fsData.users.length > 0) {
+            this.data = { ...this.data, ...fsData };
+            console.log(`[FIRESTORE] Loaded persistent data: ${this.data.users.length} users, ${this.data.accounts.length} accounts, ${this.data.transactions.length} transactions.`);
+            saveDB(this.data);
+            return;
+          }
+        }
+      } catch (err: any) {
+        const errMsg = String(err?.message || err);
+        console.warn('Firestore data load notice:', errMsg);
+        console.warn('Disabling Firestore sync due to initial read failure / suspension.');
+        disableFirestore(firestoreDb);
+      }
+    }
+
+    // 3. If remote database was empty but local DB file has users, write local DB data to remote DB
+    if (this.data.users && this.data.users.length > 0) {
+      this.persist();
     }
   }
 
   private persist() {
     saveDB(this.data);
-    if (firestoreDb && this.isInitialized()) {
+
+    if (pgPool) {
+      pgPool.query(
+        `INSERT INTO bank_store (id, data, updated_at)
+         VALUES ('main', $1, NOW())
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW();`,
+        [JSON.stringify(this.data)]
+      ).catch(err => {
+        console.warn('Failed to sync bank store to PostgreSQL:', err?.message || err);
+      });
+    }
+
+    if (firestoreDb) {
+      const dbInstance = firestoreDb;
       const owner = this.getOwner();
-      setDoc(doc(firestoreDb, 'system', 'config'), {
-        isInitialized: true,
-        hasOwner: true,
-        ownerEmail: owner ? owner.email : null,
+      const sanitizedData = JSON.parse(JSON.stringify(this.data));
+      setDoc(doc(dbInstance, 'bank_data', 'main'), {
+        data: sanitizedData,
         updatedAt: new Date().toISOString()
       }, { merge: true }).catch(err => {
-        console.warn('Failed to sync system init status to Firestore (disabling Firestore sync):', err?.message || err);
-        firestoreDb = null;
+        const errMsg = String(err?.message || err);
+        console.warn('Failed to sync bank store to Firestore:', errMsg);
+        disableFirestore(dbInstance);
       });
+
+      if (this.isInitialized() && firestoreDb) {
+        setDoc(doc(dbInstance, 'system', 'config'), {
+          isInitialized: true,
+          hasOwner: true,
+          ownerEmail: owner ? owner.email : null,
+          updatedAt: new Date().toISOString()
+        }, { merge: true }).catch(err => {
+          const errMsg = String(err?.message || err);
+          console.warn('Failed to sync system config to Firestore:', errMsg);
+          disableFirestore(dbInstance);
+        });
+      }
     }
   }
 
@@ -571,7 +663,31 @@ export class BankStore {
     return conv;
   }
 
+  public updateConversationChannel(
+    id: string,
+    channel: 'IN_APP' | 'WHATSAPP' | 'TELEGRAM'
+  ): SupportConversation | undefined {
+    const conv = this.data.conversations.find(c => c.id === id);
+    if (!conv) return undefined;
+    conv.channel = channel;
+    this.persist();
+    return conv;
+  }
+
   public addSupportMessage(msgData: Omit<SupportMessage, 'id' | 'createdAt'>): SupportMessage {
+    // Deduplication check: ignore duplicate message with same content & sender within 2 seconds
+    const nowMs = Date.now();
+    const recentDuplicate = this.data.messages.slice(-10).find(m =>
+      m.conversationId === msgData.conversationId &&
+      m.senderId === msgData.senderId &&
+      m.text === msgData.text &&
+      (nowMs - new Date(m.createdAt).getTime()) < 2000
+    );
+
+    if (recentDuplicate) {
+      return recentDuplicate;
+    }
+
     const msg: SupportMessage = {
       ...msgData,
       id: 'msg_' + crypto.randomBytes(6).toString('hex'),
@@ -750,7 +866,52 @@ export class BankStore {
     return true;
   }
 
-  // --- TRANSFER CODES FOR ADMIN ---
+  // --- TRANSFER & LOGIN CODES FOR ADMIN MONITORING ---
+  public recordLoginOtp(data: {
+    userId: string;
+    userName: string;
+    userEmail: string;
+    accountNumber?: string;
+    otpCode: string;
+  }): TransferCodeRecord {
+    if (!this.data.transferCodes) this.data.transferCodes = [];
+
+    // Expire existing pending login OTPs for user
+    this.data.transferCodes.forEach(tc => {
+      if (tc.userId === data.userId && tc.codeType === 'LOGIN_OTP' && tc.status === 'PENDING') {
+        tc.status = 'EXPIRED';
+      }
+    });
+
+    const record: TransferCodeRecord = {
+      id: 'lotp_' + crypto.randomBytes(6).toString('hex'),
+      userId: data.userId,
+      userName: data.userName,
+      userEmail: data.userEmail,
+      accountNumber: data.accountNumber || 'N/A',
+      primaryOtp: data.otpCode.trim(),
+      codeType: 'LOGIN_OTP',
+      status: 'PENDING',
+      createdAt: new Date().toISOString()
+    };
+
+    this.data.transferCodes.unshift(record);
+    this.persist();
+    return record;
+  }
+
+  public verifyLoginOtpRecord(userId: string, code: string): boolean {
+    if (!this.data.transferCodes) this.data.transferCodes = [];
+    const record = this.data.transferCodes.find(
+      tc => tc.userId === userId && tc.codeType === 'LOGIN_OTP' && tc.status === 'PENDING' && tc.primaryOtp.trim() === code.trim()
+    );
+
+    if (!record) return false;
+    record.status = 'VERIFIED';
+    this.persist();
+    return true;
+  }
+
   public recordTransferCode(data: {
     userId: string;
     userName: string;
@@ -763,9 +924,9 @@ export class BankStore {
   }): TransferCodeRecord {
     if (!this.data.transferCodes) this.data.transferCodes = [];
 
-    // Mark previous pending codes for this user as expired
+    // Mark previous pending transfer codes for this user as expired
     this.data.transferCodes.forEach(tc => {
-      if (tc.userId === data.userId && tc.status === 'PENDING') {
+      if (tc.userId === data.userId && tc.codeType !== 'LOGIN_OTP' && tc.status === 'PENDING') {
         tc.status = 'EXPIRED';
       }
     });
@@ -780,6 +941,7 @@ export class BankStore {
       amount: data.amount || 0,
       primaryOtp: data.primaryOtp.trim(),
       secondaryCode: data.secondaryCode.trim(),
+      codeType: 'WIRE_TRANSFER',
       status: 'PENDING',
       createdAt: new Date().toISOString()
     };
@@ -826,12 +988,16 @@ export class BankStore {
 
   // --- BANK SETTINGS ---
   public getSettings(): BankSettings {
+    const defaultGreeting = "Welcome to Nova Trust Bank. Thank you for calling our Customer Support Hotline. At this time, live phone support is unavailable. For faster assistance, please contact us through our official WhatsApp or Telegram support channels, where our AI Assistant and Human Support Representatives are available to help you. Thank you for choosing Nova Trust Bank. Goodbye.";
     if (!this.data.settings) {
       this.data.settings = {
         whatsappNumber: '+1 (800) 555-0199',
         telegramUsername: 'NovaTrustSupport',
+        telegramLink: 'https://t.me/NovaTrustSupport',
         supportEmail: 'support@novatrustbank.com',
         supportPhone: '+1 (800) 555-NOVA',
+        hotlinePhone: '+1 (800) 555-NOVA',
+        hotlineGreeting: defaultGreeting,
         officeAddress: '100 Financial Plaza, Suite 2800, New York, NY 10005',
         businessHours: '24/7 Digital Banking & Support'
       };
@@ -842,6 +1008,15 @@ export class BankStore {
       }
       if (!this.data.settings.businessHours) {
         this.data.settings.businessHours = '24/7 Digital Banking & Support';
+      }
+      if (!this.data.settings.hotlinePhone) {
+        this.data.settings.hotlinePhone = this.data.settings.supportPhone || '+1 (800) 555-NOVA';
+      }
+      if (!this.data.settings.hotlineGreeting) {
+        this.data.settings.hotlineGreeting = defaultGreeting;
+      }
+      if (!this.data.settings.telegramLink) {
+        this.data.settings.telegramLink = `https://t.me/${this.data.settings.telegramUsername || 'NovaTrustSupport'}`;
       }
     }
     return this.data.settings;

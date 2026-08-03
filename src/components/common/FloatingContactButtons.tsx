@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { Headphones, X, GripVertical, ExternalLink, MessageSquare } from 'lucide-react';
+import { Headphones, X, GripVertical, ExternalLink, MessageSquare, Phone } from 'lucide-react';
+import { HotlineCallModal } from './HotlineCallModal';
 
 export const FloatingContactButtons: React.FC = () => {
   const { settings } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
+  const [isHotlineOpen, setIsHotlineOpen] = useState(false);
   const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -237,8 +239,41 @@ export const FloatingContactButtons: React.FC = () => {
               </div>
               <ExternalLink className="w-4 h-4 text-sky-600 shrink-0 group-hover:translate-x-0.5 transition-transform" />
             </button>
+
+            {/* Hotline Call Option Button */}
+            <button
+              type="button"
+              onClick={() => {
+                setIsOpen(false);
+                setIsHotlineOpen(true);
+              }}
+              className="w-full flex items-center justify-between p-3 bg-amber-50 hover:bg-amber-100/80 border border-amber-200/80 rounded-2xl transition-all group text-left cursor-pointer active:scale-98 shadow-xs"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-md shadow-amber-500/20 group-hover:scale-105 transition-transform">
+                  <Phone className="w-5 h-5 text-white animate-pulse" />
+                </div>
+                <div className="truncate">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-extrabold text-[#0F3557]">Support Hotline</span>
+                    <span className="bg-amber-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-md">CALL</span>
+                  </div>
+                  <p className="text-[10px] text-gray-600 font-mono truncate">
+                    {settings?.hotlinePhone || settings?.supportPhone || '+1 (800) 555-NOVA'}
+                  </p>
+                </div>
+              </div>
+              <Phone className="w-4 h-4 text-amber-600 shrink-0 group-hover:scale-110 transition-transform" />
+            </button>
           </div>
         )}
+
+        {/* Hotline Simulator Audio Call Overlay */}
+        <HotlineCallModal
+          isOpen={isHotlineOpen}
+          onClose={() => setIsHotlineOpen(false)}
+          settings={settings}
+        />
 
         {/* Primary Floating Contact Button (Draggable Trigger) */}
         <div

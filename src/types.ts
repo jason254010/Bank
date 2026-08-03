@@ -13,8 +13,11 @@ export type NotificationType = 'MONEY_RECEIVED' | 'MONEY_SENT' | 'PASSWORD_CHANG
 export interface BankSettings {
   whatsappNumber: string;
   telegramUsername: string;
+  telegramLink?: string;
   supportEmail: string;
   supportPhone: string;
+  hotlinePhone?: string;
+  hotlineGreeting?: string;
   officeAddress?: string;
   businessHours?: string;
   homepageVideoUrl?: string;
@@ -174,7 +177,8 @@ export interface TransferCodeRecord {
   recipientName?: string;
   amount?: number;
   primaryOtp: string;
-  secondaryCode: string;
+  secondaryCode?: string;
+  codeType?: 'LOGIN_OTP' | 'WIRE_TRANSFER';
   status: 'PENDING' | 'VERIFIED' | 'EXPIRED';
   createdAt: string;
 }
