@@ -387,7 +387,7 @@ app.post('/api/auth/reset-password', (req, res) => {
 });
 
 // Owner / Admin Forgot Password Request
-app.post('/api/auth/owner/forgot-password', (req, res) => {
+app.post('/api/auth/owner/forgot-password', async (req, res) => {
   const { email } = req.body || {};
   if (!email || typeof email !== 'string' || !email.trim()) {
     return res.status(400).json({ error: 'Please enter a valid administrator email address.' });
@@ -404,9 +404,10 @@ app.post('/api/auth/owner/forgot-password', (req, res) => {
   }
 
   const tokenRecord = store.createOwnerResetToken(user.id, user.email);
+  await store.persist();
 
   const host = req.get('host') || 'localhost:3000';
-  const protocol = req.protocol || 'http';
+  const protocol = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
   const resetLink = `${protocol}://${host}/admin?token=${tokenRecord.token}`;
 
   store.logAudit({
@@ -448,7 +449,7 @@ app.get('/api/auth/owner/verify-reset-token', (req, res) => {
 });
 
 // Owner Reset Password Submit
-app.post('/api/auth/owner/reset-password', (req, res) => {
+app.post('/api/auth/owner/reset-password', async (req, res) => {
   const { token, newPassword, confirmPassword } = req.body || {};
 
   if (!token || typeof token !== 'string' || !token.trim()) {
@@ -482,6 +483,8 @@ app.post('/api/auth/owner/reset-password', (req, res) => {
 
   // Invalidate reset token so it cannot be reused
   store.invalidateOwnerResetToken(token.trim());
+
+  await store.persist();
 
   store.logAudit({
     userId: user.id,

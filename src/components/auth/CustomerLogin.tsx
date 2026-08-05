@@ -482,7 +482,7 @@ export const CustomerLogin: React.FC<CustomerLoginProps> = ({ onSwitchToOwner, o
             </p>
 
             {forgotStep === 'REQUEST' ? (
-              <form onSubmit={handleRequestOtp} className="space-y-4">
+              <form onSubmit={handleRequestOtp} noValidate className="space-y-4">
                 <input
                   type="email"
                   required

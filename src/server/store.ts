@@ -235,7 +235,7 @@ export class BankStore {
     }
   }
 
-  private async persist() {
+  public async persist() {
     saveDB(this.data);
 
     if (this.readyPromise) {
@@ -245,14 +245,16 @@ export class BankStore {
     }
 
     if (pgPool) {
-      pgPool.query(
-        `INSERT INTO bank_store (id, data, updated_at)
-         VALUES ('main', $1, NOW())
-         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW();`,
-        [JSON.stringify(this.data)]
-      ).catch(err => {
+      try {
+        await pgPool.query(
+          `INSERT INTO bank_store (id, data, updated_at)
+           VALUES ('main', $1, NOW())
+           ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW();`,
+          [JSON.stringify(this.data)]
+        );
+      } catch (err: any) {
         console.warn('Failed to sync bank store to PostgreSQL:', err?.message || err);
-      });
+      }
     }
 
     if (firestoreDb) {

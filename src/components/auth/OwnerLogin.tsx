@@ -112,8 +112,14 @@ export const OwnerLogin: React.FC<OwnerLoginProps> = ({ onSwitchToCustomer, onGo
     setForgotSuccessMessage(null);
     setDevResetLink(null);
 
-    if (!forgotEmail.trim()) {
+    const trimmedEmail = forgotEmail.trim();
+    if (!trimmedEmail) {
       setForgotError('Please enter your administrator email address.');
+      return;
+    }
+
+    if (!trimmedEmail.includes('@')) {
+      setForgotError('Please enter a valid administrator email address.');
       return;
     }
 
@@ -121,7 +127,7 @@ export const OwnerLogin: React.FC<OwnerLoginProps> = ({ onSwitchToCustomer, onGo
     try {
       const res = await apiRequest('/api/auth/owner/forgot-password', {
         method: 'POST',
-        body: JSON.stringify({ email: forgotEmail.trim() })
+        body: JSON.stringify({ email: trimmedEmail })
       });
 
       setForgotSuccessMessage(res.message || 'If an account exists for this email, a reset link has been sent.');
@@ -255,7 +261,7 @@ export const OwnerLogin: React.FC<OwnerLoginProps> = ({ onSwitchToCustomer, onGo
                 </div>
               )}
 
-              <form onSubmit={handleLoginSubmit} className="space-y-4">
+              <form onSubmit={handleLoginSubmit} noValidate className="space-y-4">
                 <div>
                   <label className="block text-xs font-bold text-[#172B4D] uppercase tracking-wider mb-1.5">
                     Admin Email Address
@@ -385,7 +391,7 @@ export const OwnerLogin: React.FC<OwnerLoginProps> = ({ onSwitchToCustomer, onGo
                   </button>
                 </div>
               ) : (
-                <form onSubmit={handleForgotSubmit} className="space-y-4">
+                <form onSubmit={handleForgotSubmit} noValidate className="space-y-4">
                   <div>
                     <label className="block text-xs font-bold text-[#172B4D] uppercase tracking-wider mb-1.5">
                       Registered Owner Email Address
@@ -507,7 +513,7 @@ export const OwnerLogin: React.FC<OwnerLoginProps> = ({ onSwitchToCustomer, onGo
                       <p className="text-[11px] text-emerald-700 pt-1 font-semibold">Redirecting to administrator login terminal...</p>
                     </div>
                   ) : (
-                    <form onSubmit={handleResetSubmit} className="space-y-4">
+                    <form onSubmit={handleResetSubmit} noValidate className="space-y-4">
                       <div>
                         <label className="block text-xs font-bold text-[#172B4D] uppercase tracking-wider mb-1.5">
                           New Admin Password
