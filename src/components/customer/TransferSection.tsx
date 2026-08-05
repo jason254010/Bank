@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { apiRequest } from '../../services/api';
 import { Beneficiary, Transaction } from '../../types';
+import { WORLD_COUNTRIES, getCountryInfo } from '../../data/countries';
 import { jsPDF } from 'jspdf';
 import {
   Send,
@@ -106,6 +107,12 @@ export const TransferSection: React.FC<TransferSectionProps> = ({
     swiftCode: '',
     iban: '',
     routingNumber: '',
+    sortCode: '',
+    transitNumber: '',
+    institutionNumber: '',
+    bsbCode: '',
+    ifscCode: '',
+    clabe: '',
     country: 'United States',
     currency: 'USD',
     amount: '',
@@ -431,8 +438,10 @@ export const TransferSection: React.FC<TransferSectionProps> = ({
         }
       }, 100);
     } catch (err: any) {
-      setPrimaryCodeError(err.message || 'Invalid verification code. Please check the code sent to your registered email address and try again.');
-      showToast(err.message || 'Invalid verification code.', 'error');
+      const errorMsg = 'Invalid or expired OTP.';
+      setPrimaryCodeError(errorMsg);
+      showToast(errorMsg, 'error');
+      setStep('OTP_VERIFICATION');
     } finally {
       setIsVerifyingPrimaryOtp(false);
     }
@@ -459,8 +468,10 @@ export const TransferSection: React.FC<TransferSectionProps> = ({
       // Both codes verified successfully! Begin final verification clearance process
       start40SecondFinalVerificationProcess(otpDigits.join(''), fullSecond);
     } catch (err: any) {
-      setSecondCodeError(err.message || 'Invalid verification code. Please check the code sent to your registered email address and try again.');
-      showToast(err.message || 'Invalid verification code.', 'error');
+      const errorMsg = 'Invalid or expired OTP.';
+      setSecondCodeError(errorMsg);
+      showToast(errorMsg, 'error');
+      setStep('SECOND_VERIFICATION');
     } finally {
       setIsVerifyingSecondOtp(false);
     }
@@ -1053,77 +1064,100 @@ Status: SUCCESSFUL`;
               </div>
             </div>
 
-            {/* Country & Currency Row */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {/* Country & Currency Row (External Transfer Only) */}
+            {formData.transferType === 'External Wire' && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block font-bold text-[#1E2A36] mb-1">
+                    Recipient Country <span className="text-rose-600">*</span>
+                  </label>
+                  <select
+                    value={formData.country}
+                    onChange={e => {
+                      const selectedCountry = e.target.value;
+                      const info = getCountryInfo(selectedCountry);
+                      setFormData({
+                        ...formData,
+                        country: selectedCountry,
+                        currency: info.currency
+                      });
+                    }}
+                    className="w-full px-3.5 py-3 border border-[#D9DEE5] rounded-xl bg-white font-medium text-xs focus:outline-none focus:border-[#0057B8]"
+                  >
+                    {['North America', 'Europe', 'Asia', 'Africa', 'South America', 'Middle East', 'Caribbean', 'Oceania'].map(region => {
+                      const regionCountries = WORLD_COUNTRIES.filter(c => c.region === region);
+                      if (regionCountries.length === 0) return null;
+                      return (
+                        <optgroup key={region} label={`── ${region} ──`}>
+                          {regionCountries.map(c => (
+                            <option key={c.code} value={c.name}>
+                              {c.name} ({c.code})
+                            </option>
+                          ))}
+                        </optgroup>
+                      );
+                    })}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-[#1E2A36] mb-1">
+                    Transfer Currency <span className="text-rose-600">*</span>
+                  </label>
+                  <select
+                    value={formData.currency}
+                    onChange={e => setFormData({ ...formData, currency: e.target.value })}
+                    className="w-full px-3.5 py-3 border border-[#D9DEE5] rounded-xl bg-white font-mono font-semibold text-xs focus:outline-none focus:border-[#0057B8]"
+                  >
+                    <option value="USD">USD ($) - US Dollar</option>
+                    <option value="EUR">EUR (€) - Euro</option>
+                    <option value="GBP">GBP (£) - British Pound</option>
+                    <option value="CAD">CAD ($) - Canadian Dollar</option>
+                    <option value="AUD">AUD ($) - Australian Dollar</option>
+                    <option value="SGD">SGD ($) - Singapore Dollar</option>
+                    <option value="AED">AED (د.إ) - UAE Dirham</option>
+                    <option value="CHF">CHF (Fr) - Swiss Franc</option>
+                    <option value="JPY">JPY (¥) - Japanese Yen</option>
+                    <option value="NGN">NGN (₦) - Nigerian Naira</option>
+                    <option value="ZAR">ZAR (R) - South African Rand</option>
+                    <option value="INR">INR (₹) - Indian Rupee</option>
+                    <option value="BRL">BRL (R$) - Brazilian Real</option>
+                    <option value="MXN">MXN ($) - Mexican Peso</option>
+                    <option value="PHP">PHP (₱) - Philippine Peso</option>
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {/* Recipient Bank Name */}
+            {formData.transferType === 'External Wire' && (
               <div>
                 <label className="block font-bold text-[#1E2A36] mb-1">
-                  Recipient Country <span className="text-rose-600">*</span>
+                  Recipient Bank Name <span className="text-rose-600">*</span>
                 </label>
-                <select
-                  value={formData.country}
-                  onChange={e => setFormData({ ...formData, country: e.target.value })}
-                  className="w-full px-3.5 py-3 border border-[#D9DEE5] rounded-xl bg-white font-medium text-xs focus:outline-none focus:border-[#0057B8]"
-                >
-                  <option value="United States">United States (US)</option>
-                  <option value="United Kingdom">United Kingdom (UK)</option>
-                  <option value="Canada">Canada (CA)</option>
-                  <option value="Germany">Germany (DE)</option>
-                  <option value="France">France (FR)</option>
-                  <option value="Singapore">Singapore (SG)</option>
-                  <option value="Australia">Australia (AU)</option>
-                  <option value="United Arab Emirates">United Arab Emirates (UAE)</option>
-                  <option value="Japan">Japan (JP)</option>
-                  <option value="Switzerland">Switzerland (CH)</option>
-                </select>
-              </div>
 
-              <div>
-                <label className="block font-bold text-[#1E2A36] mb-1">
-                  Transfer Currency <span className="text-rose-600">*</span>
-                </label>
-                <select
-                  value={formData.currency}
-                  onChange={e => setFormData({ ...formData, currency: e.target.value })}
-                  className="w-full px-3.5 py-3 border border-[#D9DEE5] rounded-xl bg-white font-mono font-semibold text-xs focus:outline-none focus:border-[#0057B8]"
-                >
-                  <option value="USD">USD ($) - US Dollar</option>
-                  <option value="EUR">EUR (€) - Euro</option>
-                  <option value="GBP">GBP (£) - British Pound</option>
-                  <option value="CAD">CAD ($) - Canadian Dollar</option>
-                  <option value="AUD">AUD ($) - Australian Dollar</option>
-                  <option value="SGD">SGD ($) - Singapore Dollar</option>
-                  <option value="AED">AED (د.إ) - UAE Dirham</option>
-                  <option value="CHF">CHF (Fr) - Swiss Franc</option>
-                </select>
+                <input
+                  type="text"
+                  required
+                  value={formData.bankName}
+                  onChange={e => setFormData({ ...formData, bankName: e.target.value })}
+                  placeholder="Enter Recipient Bank Name (e.g. Barclays, HSBC, Chase, Deutsche Bank)"
+                  className="w-full px-3.5 py-3 text-xs border border-[#D9DEE5] rounded-xl focus:outline-none focus:border-[#0057B8] font-medium"
+                />
               </div>
-            </div>
+            )}
 
-            {/* 1. Recipient Bank Name */}
+            {/* Recipient Account Number */}
             <div>
               <label className="block font-bold text-[#1E2A36] mb-1">
-                Recipient Bank Name <span className="text-rose-600">*</span>
-              </label>
-
-              <input
-                type="text"
-                required
-                value={formData.bankName}
-                onChange={e => {
-                  const val = e.target.value;
-                  setFormData({ ...formData, bankName: val });
-                  if (formData.recipientAccountNumber) {
-                    handleLookupAccount(formData.recipientAccountNumber, val);
-                  }
-                }}
-                placeholder="Enter Recipient Bank Name (e.g. Nova Trust Bank, Chase, Wells Fargo)"
-                className="w-full px-3.5 py-3 text-xs border border-[#D9DEE5] rounded-xl focus:outline-none focus:border-[#0057B8] font-medium"
-              />
-            </div>
-
-            {/* 2. Recipient Account Number */}
-            <div>
-              <label className="block font-bold text-[#1E2A36] mb-1">
-                Recipient Account Number <span className="text-rose-600">*</span>
+                {formData.transferType === 'Internal'
+                  ? 'Recipient Account Number'
+                  : getCountryInfo(formData.country).bankingType === 'IBAN'
+                  ? 'IBAN (International Bank Account Number)'
+                  : getCountryInfo(formData.country).bankingType === 'CLABE'
+                  ? '18-Digit CLABE'
+                  : 'Recipient Account Number'}{' '}
+                <span className="text-rose-600">*</span>
               </label>
 
               <div className="flex gap-2">
@@ -1134,24 +1168,38 @@ Status: SUCCESSFUL`;
                   onChange={e => {
                     const val = e.target.value;
                     setFormData({ ...formData, recipientAccountNumber: val });
-                    if (val.length >= 6) {
-                      handleLookupAccount(val, formData.bankName);
+                    if (formData.transferType === 'Internal' && val.length >= 6) {
+                      handleLookupAccount(val, 'Nova Trust Bank');
                     } else {
                       setIsInternalMatch(null);
                     }
                   }}
-                  onBlur={() => handleLookupAccount(formData.recipientAccountNumber, formData.bankName)}
-                  placeholder="e.g. 1092837465"
-                  className="flex-1 px-3.5 py-3 font-mono text-sm border border-[#D9DEE5] rounded-xl focus:outline-none focus:border-[#0057B8]"
+                  onBlur={() => {
+                    if (formData.transferType === 'Internal') {
+                      handleLookupAccount(formData.recipientAccountNumber, 'Nova Trust Bank');
+                    }
+                  }}
+                  placeholder={
+                    formData.transferType === 'Internal'
+                      ? 'e.g. 1092837465'
+                      : getCountryInfo(formData.country).bankingType === 'IBAN'
+                      ? 'e.g. DE89370400440532013000'
+                      : getCountryInfo(formData.country).bankingType === 'CLABE'
+                      ? 'e.g. 012180004467329123'
+                      : 'e.g. 1092837465'
+                  }
+                  className="flex-1 px-3.5 py-3 font-mono text-sm border border-[#D9DEE5] rounded-xl focus:outline-none focus:border-[#0057B8] uppercase"
                 />
 
-                <button
-                  type="button"
-                  onClick={() => handleLookupAccount(formData.recipientAccountNumber, formData.bankName)}
-                  className="px-4 py-3 bg-[#0F3557] hover:bg-[#0057B8] text-white font-semibold rounded-xl transition-colors flex items-center gap-1.5"
-                >
-                  {isValidatingAccount ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Lookup'}
-                </button>
+                {formData.transferType === 'Internal' && (
+                  <button
+                    type="button"
+                    onClick={() => handleLookupAccount(formData.recipientAccountNumber, 'Nova Trust Bank')}
+                    className="px-4 py-3 bg-[#0F3557] hover:bg-[#0057B8] text-white font-semibold rounded-xl transition-colors flex items-center gap-1.5"
+                  >
+                    {isValidatingAccount ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Lookup'}
+                  </button>
+                )}
               </div>
 
               {isValidatingAccount && (
@@ -1170,15 +1218,9 @@ Status: SUCCESSFUL`;
                   </div>
                 </div>
               )}
-
-              {isInternalMatch === false && formData.recipientAccountNumber.length >= 6 && (
-                <p className="text-[11px] text-[#6E7A87] mt-1 italic">
-                  External interbank recipient. Manual account verification enabled.
-                </p>
-              )}
             </div>
 
-            {/* 3. Recipient Account Name */}
+            {/* Recipient Full Name */}
             <div>
               <label className="block font-bold text-[#1E2A36] mb-1">
                 Recipient Full Name <span className="text-rose-600">*</span>
@@ -1194,47 +1236,135 @@ Status: SUCCESSFUL`;
               />
             </div>
 
-            {/* International Transfer Identification Fields (SWIFT / BIC / IBAN / Routing) */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-[#F3F5F7] p-3.5 rounded-2xl border border-[#D9DEE5]">
-              <div>
-                <label className="block text-[11px] font-bold text-[#0F3557] mb-1">
-                  SWIFT / BIC Code
-                </label>
-                <input
-                  type="text"
-                  value={formData.swiftCode}
-                  onChange={e => setFormData({ ...formData, swiftCode: e.target.value.toUpperCase() })}
-                  placeholder="e.g. NVTBUS33XXX"
-                  className="w-full px-3 py-2 font-mono text-xs border border-[#D9DEE5] rounded-xl focus:outline-none focus:border-[#0057B8] bg-white uppercase"
-                />
-              </div>
+            {/* Dynamic Banking Identifier Fields for External Wire */}
+            {formData.transferType === 'External Wire' && (() => {
+              const info = getCountryInfo(formData.country);
 
-              <div>
-                <label className="block text-[11px] font-bold text-[#0F3557] mb-1">
-                  IBAN
-                </label>
-                <input
-                  type="text"
-                  value={formData.iban}
-                  onChange={e => setFormData({ ...formData, iban: e.target.value.toUpperCase() })}
-                  placeholder="e.g. GB29NWBK60161331926819"
-                  className="w-full px-3 py-2 font-mono text-xs border border-[#D9DEE5] rounded-xl focus:outline-none focus:border-[#0057B8] bg-white uppercase"
-                />
-              </div>
+              if (info.bankingType === 'Routing') {
+                return (
+                  <div>
+                    <label className="block font-bold text-[#1E2A36] mb-1">
+                      Routing Number (ABA) <span className="text-rose-600">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={formData.routingNumber}
+                      onChange={e => setFormData({ ...formData, routingNumber: e.target.value })}
+                      placeholder="9-Digit ABA Routing Number (e.g. 021000021)"
+                      className="w-full px-3.5 py-3 font-mono text-xs border border-[#D9DEE5] rounded-xl focus:outline-none focus:border-[#0057B8]"
+                    />
+                  </div>
+                );
+              }
 
-              <div>
-                <label className="block text-[11px] font-bold text-[#0F3557] mb-1">
-                  Routing / Sort Code
-                </label>
-                <input
-                  type="text"
-                  value={formData.routingNumber}
-                  onChange={e => setFormData({ ...formData, routingNumber: e.target.value })}
-                  placeholder="e.g. 021000021"
-                  className="w-full px-3 py-2 font-mono text-xs border border-[#D9DEE5] rounded-xl focus:outline-none focus:border-[#0057B8] bg-white"
-                />
-              </div>
-            </div>
+              if (info.bankingType === 'SortCode') {
+                return (
+                  <div>
+                    <label className="block font-bold text-[#1E2A36] mb-1">
+                      Sort Code <span className="text-rose-600">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={formData.sortCode}
+                      onChange={e => setFormData({ ...formData, sortCode: e.target.value })}
+                      placeholder="6-Digit UK Sort Code (e.g. 20-45-89)"
+                      className="w-full px-3.5 py-3 font-mono text-xs border border-[#D9DEE5] rounded-xl focus:outline-none focus:border-[#0057B8]"
+                    />
+                  </div>
+                );
+              }
+
+              if (info.bankingType === 'IBAN' || info.bankingType === 'Standard') {
+                return (
+                  <div>
+                    <label className="block font-bold text-[#1E2A36] mb-1">
+                      BIC / SWIFT Code <span className="text-rose-600">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={formData.swiftCode}
+                      onChange={e => setFormData({ ...formData, swiftCode: e.target.value.toUpperCase() })}
+                      placeholder="BIC/SWIFT Code (8 or 11 characters, e.g. DEUTDEDDBXX)"
+                      className="w-full px-3.5 py-3 font-mono text-xs border border-[#D9DEE5] rounded-xl focus:outline-none focus:border-[#0057B8] uppercase"
+                    />
+                  </div>
+                );
+              }
+
+              if (info.bankingType === 'Transit') {
+                return (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-bold text-[#1E2A36] mb-1">
+                        Transit Number (5 digits) <span className="text-rose-600">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={formData.transitNumber}
+                        onChange={e => setFormData({ ...formData, transitNumber: e.target.value })}
+                        placeholder="e.g. 12345"
+                        className="w-full px-3.5 py-3 font-mono text-xs border border-[#D9DEE5] rounded-xl focus:outline-none focus:border-[#0057B8]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-bold text-[#1E2A36] mb-1">
+                        Institution Number (3 digits) <span className="text-rose-600">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={formData.institutionNumber}
+                        onChange={e => setFormData({ ...formData, institutionNumber: e.target.value })}
+                        placeholder="e.g. 003"
+                        className="w-full px-3.5 py-3 font-mono text-xs border border-[#D9DEE5] rounded-xl focus:outline-none focus:border-[#0057B8]"
+                      />
+                    </div>
+                  </div>
+                );
+              }
+
+              if (info.bankingType === 'BSB') {
+                return (
+                  <div>
+                    <label className="block font-bold text-[#1E2A36] mb-1">
+                      BSB Code <span className="text-rose-600">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={formData.bsbCode}
+                      onChange={e => setFormData({ ...formData, bsbCode: e.target.value })}
+                      placeholder="6-Digit BSB Code (e.g. 062-000)"
+                      className="w-full px-3.5 py-3 font-mono text-xs border border-[#D9DEE5] rounded-xl focus:outline-none focus:border-[#0057B8]"
+                    />
+                  </div>
+                );
+              }
+
+              if (info.bankingType === 'IFSC') {
+                return (
+                  <div>
+                    <label className="block font-bold text-[#1E2A36] mb-1">
+                      IFSC Code <span className="text-rose-600">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={formData.ifscCode}
+                      onChange={e => setFormData({ ...formData, ifscCode: e.target.value.toUpperCase() })}
+                      placeholder="11-Character IFSC Code (e.g. SBIN0001234)"
+                      className="w-full px-3.5 py-3 font-mono text-xs border border-[#D9DEE5] rounded-xl focus:outline-none focus:border-[#0057B8] uppercase"
+                    />
+                  </div>
+                );
+              }
+
+              return null;
+            })()}
 
             {/* 4. Amount */}
             <div>

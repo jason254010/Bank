@@ -392,8 +392,28 @@ export class BankStore {
     return account;
   }
 
-  public getAccountByUserId(userId: string): Account | undefined {
-    return this.data.accounts.find(a => a.userId === userId);
+  public getAccountByUserId(userId: string): Account {
+    let acc = this.data.accounts.find(a => a.userId === userId);
+    if (!acc) {
+      const user = this.data.users.find(u => u.id === userId);
+      const accNum = Math.floor(1000000000 + Math.random() * 9000000000).toString();
+      acc = {
+        id: `acc-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        userId: userId,
+        accountNumber: accNum,
+        routingNumber: '021000021',
+        currency: 'USD',
+        balance: 15000,
+        availableBalance: 15000,
+        accountType: 'Checking',
+        status: 'Active',
+        kycStatus: user?.kycStatus || 'Verified',
+        createdAt: new Date().toISOString()
+      };
+      this.data.accounts.push(acc);
+      this.persist();
+    }
+    return acc;
   }
 
   public getAccountByNumber(accountNumber: string): Account | undefined {

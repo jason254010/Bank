@@ -1169,7 +1169,7 @@ app.post('/api/transfers/verify-first-otp', requireAuth, (req, res) => {
 
   const isValid = store.verifyFirstTransferOtp(user.id, otpCode);
   if (!isValid) {
-    return res.status(400).json({ error: 'Invalid verification code. Please check the code sent to your registered email address and try again.' });
+    return res.status(400).json({ error: 'Invalid or expired OTP.' });
   }
 
   res.json({
@@ -1189,7 +1189,7 @@ app.post('/api/transfers/verify-second-otp', requireAuth, (req, res) => {
 
   const isValid = store.verifySecondTransferOtp(user.id, secondCode);
   if (!isValid) {
-    return res.status(400).json({ error: 'Invalid verification code. Please check the secondary code sent to your registered email address and try again.' });
+    return res.status(400).json({ error: 'Invalid or expired OTP.' });
   }
 
   res.json({
@@ -1216,22 +1216,19 @@ app.post('/api/transfers/execute', requireAuth, (req, res) => {
   // 1. Verify First OTP against active pending record
   const isOtpValid = store.verifyFirstTransferOtp(user.id, otpCode);
   if (!isOtpValid) {
-    return res.status(400).json({ error: 'Invalid First Transfer Verification Code. Verification failed.' });
+    return res.status(400).json({ error: 'Invalid or expired OTP.' });
   }
 
   // 1b. Verify Secondary Code against active pending record
   const isSecondValid = store.verifySecondTransferOtp(user.id, secondCode);
   if (!isSecondValid) {
-    return res.status(400).json({ error: 'Invalid Second Transfer Verification Code. Verification failed.' });
+    return res.status(400).json({ error: 'Invalid or expired OTP.' });
   }
 
   store.markTransferCodeVerified(user.id);
 
-  // 2. Validate sender account status and balance
+  // 2. Sender account retrieved automatically for logged-in user
   const senderAccount = store.getAccountByUserId(user.id);
-  if (!senderAccount) {
-    return res.status(404).json({ error: 'Sender account not found.' });
-  }
 
   if (user.kycStatus === 'Verification Required' || user.kycStatus === 'Suspended' || senderAccount.kycStatus === 'Verification Required' || senderAccount.kycStatus === 'Suspended') {
     return res.status(403).json({ error: 'Your account has been temporarily restricted because your KYC verification is incomplete. Please contact Customer Support to complete your identity verification.' });
