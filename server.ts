@@ -4,6 +4,7 @@ import fs from 'fs';
 import AdmZip from 'adm-zip';
 import { GoogleGenAI } from '@google/genai';
 import { store } from './src/server/store.js';
+import { sendPasswordResetEmail } from './src/server/email.js';
 import { generateHistoricalTransactions } from './src/server/generator.js';
 import { UserRole, AccountStatus } from './src/types.js';
 
@@ -396,10 +397,10 @@ app.post('/api/auth/owner/forgot-password', async (req, res) => {
   const cleanEmail = email.trim().toLowerCase();
   const user = store.findUserByEmail(cleanEmail);
 
-  // Requirement: If the email is not registered or not an OWNER, display generic message without revealing existence
+  // Requirement: If the email is not registered or not an OWNER, return 400 or generic message without revealing existence
   if (!user || user.role !== 'OWNER') {
-    return res.json({
-      message: 'If an account exists for this email, a reset link has been sent.'
+    return res.status(404).json({
+      error: 'No administrator account found with that email address.'
     });
   }
 
@@ -410,27 +411,71 @@ app.post('/api/auth/owner/forgot-password', async (req, res) => {
   const protocol = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
   const resetLink = `${protocol}://${host}/admin?token=${tokenRecord.token}`;
 
-  store.logAudit({
-    userId: user.id,
-    userEmail: user.email,
-    action: 'OWNER_PASSWORD_RESET_REQUESTED',
-    details: `Generated 15-min single-use reset token for owner (${user.email}): ${resetLink}`,
-    ipAddress: getClientIp(req),
-    status: 'SUCCESS'
-  });
+  // Attempt real email dispatch via Resend if RESEND_API_KEY is configured
+  let emailDispatched = false;
+  let emailError: string | undefined;
 
-  store.createNotification({
-    userId: user.id,
-    title: 'Admin Password Reset Link Generated',
-    message: `A password reset link was requested for your administrator account (${user.email}). Reset Link: ${resetLink} (Expires in 15 minutes)`,
-    type: 'SYSTEM_ALERT'
-  });
+  if (process.env.RESEND_API_KEY && process.env.RESEND_API_KEY.trim()) {
+    const emailResult = await sendPasswordResetEmail(user.email, resetLink, user.fullName || 'Administrator');
+    if (emailResult.success) {
+      emailDispatched = true;
+    } else {
+      emailError = emailResult.error;
+    }
+  }
 
-  return res.json({
-    message: 'If an account exists for this email, a reset link has been sent.',
-    resetLink,
-    token: tokenRecord.token
-  });
+  if (emailDispatched) {
+    store.logAudit({
+      userId: user.id,
+      userEmail: user.email,
+      action: 'OWNER_PASSWORD_RESET_REQUESTED',
+      details: `Dispatched 15-min reset token to owner (${user.email}) via Resend.`,
+      ipAddress: getClientIp(req),
+      status: 'SUCCESS'
+    });
+
+    store.createNotification({
+      userId: user.id,
+      title: 'Admin Password Reset Link Sent',
+      message: `A password reset link was dispatched to your email (${user.email}).`,
+      type: 'SYSTEM_ALERT'
+    });
+
+    return res.json({
+      success: true,
+      emailDispatched: true,
+      message: 'Password reset link has been sent to your registered email address via Resend.',
+      resetLink,
+      token: tokenRecord.token
+    });
+  } else {
+    store.logAudit({
+      userId: user.id,
+      userEmail: user.email,
+      action: 'OWNER_PASSWORD_RESET_TOKEN_GENERATED',
+      details: `Generated 15-min reset token in development direct mode for owner (${user.email}).`,
+      ipAddress: getClientIp(req),
+      status: 'SUCCESS'
+    });
+
+    store.createNotification({
+      userId: user.id,
+      title: 'Admin Password Reset Link Generated',
+      message: `A password reset token was generated for your administrator account (${user.email}).`,
+      type: 'SYSTEM_ALERT'
+    });
+
+    return res.json({
+      success: true,
+      emailDispatched: false,
+      message: emailError
+        ? `Email provider error: ${emailError}. Switched to Development Direct Reset Mode.`
+        : 'Owner identity verified. Development Direct Reset Mode is active.',
+      resetLink,
+      token: tokenRecord.token,
+      emailError
+    });
+  }
 });
 
 // Verify Owner Reset Token

@@ -358,28 +358,29 @@ export const OwnerLogin: React.FC<OwnerLoginProps> = ({ onSwitchToCustomer, onGo
                   <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl text-emerald-900 text-xs space-y-2">
                     <div className="flex items-center gap-2 font-bold text-emerald-800 text-sm">
                       <CheckCircle2 className="w-5 h-5 text-emerald-600 flex-shrink-0" />
-                      <span>Password Reset Link Dispatched</span>
+                      <span>Owner Verification Successful</span>
                     </div>
-                    <p>{forgotSuccessMessage}</p>
-                    <p className="text-[11px] text-emerald-700">
-                      Please check your administrator email inbox or audit logs for the secure 15-minute reset link.
-                    </p>
+                    <p className="font-medium">{forgotSuccessMessage}</p>
                   </div>
 
-                  {/* Dev / Preview Helper Button if reset link is available */}
+                  {/* Dev / Direct Reset Link Button */}
                   {devResetLink && (
-                    <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-2 text-xs">
-                      <div className="flex items-center gap-1.5 font-bold text-amber-900 text-[11px]">
-                        <Shield className="w-3.5 h-3.5 text-[#D4AF37]" />
-                        <span>System Generated Secure Reset Link (Preview Mode):</span>
+                    <div className="p-4 bg-amber-50/90 border border-amber-300 rounded-2xl space-y-3 text-xs shadow-sm">
+                      <div className="flex items-center gap-2 font-bold text-amber-900 text-xs">
+                        <Shield className="w-4 h-4 text-[#D4AF37] flex-shrink-0" />
+                        <span>Development Direct Reset Mode Active</span>
                       </div>
+                      <p className="text-[11px] text-amber-800 leading-relaxed">
+                        A secure 15-minute single-use reset token was generated for your owner account. Click below to enter your new password immediately.
+                      </p>
                       <button
                         type="button"
                         onClick={() => openTestResetLink(devResetLink)}
-                        className="w-full py-2 px-3 bg-[#0F4C81] hover:bg-[#0B1F3A] text-white rounded-lg font-bold text-xs flex items-center justify-center gap-1.5 transition-colors shadow-sm"
+                        className="w-full py-2.5 px-4 bg-[#0B1F3A] hover:bg-[#0F4C81] text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-md active:scale-[0.98]"
                       >
-                        <span>Open Reset Password Link</span>
-                        <ExternalLink className="w-3.5 h-3.5 text-[#D4AF37]" />
+                        <KeyRound className="w-4 h-4 text-[#D4AF37]" />
+                        <span>Reset Password Now</span>
+                        <ExternalLink className="w-3.5 h-3.5 opacity-75 ml-auto" />
                       </button>
                     </div>
                   )}
