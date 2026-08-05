@@ -899,10 +899,34 @@ const SupportLoginForm: React.FC<{ onLoginSuccess: () => void }> = ({ onLoginSuc
   const { login, showToast } = useAuth();
   const [loginIdentifier, setLoginIdentifier] = useState('');
   const [password, setPassword] = useState('');
+  const [otpCode, setOtpCode] = useState('');
+  const [pendingOtpUserId, setPendingOtpUserId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (pendingOtpUserId) {
+      if (!otpCode.trim()) return;
+      setIsSubmitting(true);
+      try {
+        const res = await apiRequest<any>('/api/auth/verify-login-otp', {
+          method: 'POST',
+          body: JSON.stringify({
+            userId: pendingOtpUserId,
+            otpCode: otpCode.trim()
+          })
+        });
+        login(res);
+        showToast('Support session connected', 'success');
+        onLoginSuccess();
+      } catch (err: any) {
+        showToast(err.message || 'Invalid 2FA verification code.', 'error');
+      } finally {
+        setIsSubmitting(false);
+      }
+      return;
+    }
+
     if (!loginIdentifier || !password) return;
     setIsSubmitting(true);
     try {
@@ -915,9 +939,16 @@ const SupportLoginForm: React.FC<{ onLoginSuccess: () => void }> = ({ onLoginSuc
         })
       });
 
-      login(res);
-      showToast('Support session connected', 'success');
-      onLoginSuccess();
+      if (res.requiresOtp && res.userId) {
+        setPendingOtpUserId(res.userId);
+        showToast('Verification code dispatched. Please enter 6-digit OTP.', 'info');
+      } else if (res.user && res.token) {
+        login(res);
+        showToast('Support session connected', 'success');
+        onLoginSuccess();
+      } else {
+        showToast('Unexpected authentication response.', 'error');
+      }
     } catch (err: any) {
       showToast(err.message || 'Login failed. Check your credentials.', 'error');
     } finally {
@@ -927,41 +958,67 @@ const SupportLoginForm: React.FC<{ onLoginSuccess: () => void }> = ({ onLoginSuc
 
   return (
     <form onSubmit={handleSubmit} className="space-y-3">
-      <div className="text-left">
-        <label className="block text-xs font-semibold text-gray-700 mb-1">
-          Email Address or Customer ID
-        </label>
-        <input
-          type="text"
-          value={loginIdentifier}
-          onChange={e => setLoginIdentifier(e.target.value)}
-          placeholder="e.g. customer@example.com or CID-849201"
-          required
-          className="w-full bg-white text-black caret-black text-xs px-3.5 py-2.5 rounded-xl border border-gray-300 focus:outline-none focus:border-[#0F4C81] placeholder:text-gray-400 font-sans"
-        />
-      </div>
+      {pendingOtpUserId ? (
+        <div className="text-left space-y-2">
+          <label className="block text-xs font-semibold text-gray-700">
+            Enter 6-Digit Login OTP
+          </label>
+          <input
+            type="text"
+            maxLength={6}
+            value={otpCode}
+            onChange={e => setOtpCode(e.target.value)}
+            placeholder="123456"
+            required
+            className="w-full bg-white text-black caret-black text-xs px-3.5 py-2.5 rounded-xl border border-gray-300 focus:outline-none focus:border-[#0F4C81] placeholder:text-gray-400 font-sans tracking-widest text-center font-bold"
+          />
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            className="w-full bg-[#0F4C81] hover:bg-[#0C3C66] text-white py-2.5 rounded-xl font-bold text-xs shadow-md transition-colors mt-2"
+          >
+            {isSubmitting ? 'Verifying Code...' : 'Verify Login Code'}
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="text-left">
+            <label className="block text-xs font-semibold text-gray-700 mb-1">
+              Email Address or Customer ID
+            </label>
+            <input
+              type="text"
+              value={loginIdentifier}
+              onChange={e => setLoginIdentifier(e.target.value)}
+              placeholder="e.g. customer@example.com or CID-849201"
+              required
+              className="w-full bg-white text-black caret-black text-xs px-3.5 py-2.5 rounded-xl border border-gray-300 focus:outline-none focus:border-[#0F4C81] placeholder:text-gray-400 font-sans"
+            />
+          </div>
 
-      <div className="text-left">
-        <label className="block text-xs font-semibold text-gray-700 mb-1">
-          Password
-        </label>
-        <input
-          type="password"
-          value={password}
-          onChange={e => setPassword(e.target.value)}
-          placeholder="Enter your password"
-          required
-          className="w-full bg-white text-black caret-black text-xs px-3.5 py-2.5 rounded-xl border border-gray-300 focus:outline-none focus:border-[#0F4C81] placeholder:text-gray-400 font-sans"
-        />
-      </div>
+          <div className="text-left">
+            <label className="block text-xs font-semibold text-gray-700 mb-1">
+              Password
+            </label>
+            <input
+              type="password"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              placeholder="Enter your password"
+              required
+              className="w-full bg-white text-black caret-black text-xs px-3.5 py-2.5 rounded-xl border border-gray-300 focus:outline-none focus:border-[#0F4C81] placeholder:text-gray-400 font-sans"
+            />
+          </div>
 
-      <button
-        type="submit"
-        disabled={isSubmitting}
-        className="w-full bg-[#0F4C81] hover:bg-[#0C3C66] text-white py-2.5 rounded-xl font-bold text-xs shadow-md transition-colors mt-2"
-      >
-        {isSubmitting ? 'Authenticating...' : 'Sign In to Customer Support'}
-      </button>
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            className="w-full bg-[#0F4C81] hover:bg-[#0C3C66] text-white py-2.5 rounded-xl font-bold text-xs shadow-md transition-colors mt-2"
+          >
+            {isSubmitting ? 'Authenticating...' : 'Sign In to Customer Support'}
+          </button>
+        </>
+      )}
     </form>
   );
 };

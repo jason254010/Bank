@@ -182,3 +182,13 @@ export interface TransferCodeRecord {
   status: 'PENDING' | 'VERIFIED' | 'EXPIRED';
   createdAt: string;
 }
+
+export interface OwnerResetTokenRecord {
+  id: string;
+  userId: string;
+  email: string;
+  token: string;
+  expiresAt: string;
+  used: boolean;
+  createdAt: string;
+}

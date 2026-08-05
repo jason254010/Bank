@@ -131,6 +131,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [refreshSettings]);
 
   const login = (data: { user: User; account?: Account; token: string }) => {
+    if (!data || !data.user || !data.token) {
+      console.warn('Invalid login payload:', data);
+      return;
+    }
     setUser(data.user);
     setAccount(data.account || null);
     setToken(data.token);

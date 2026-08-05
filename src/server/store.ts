@@ -19,6 +19,7 @@ import {
   UserRole,
   AccountType,
   TransferCodeRecord,
+  OwnerResetTokenRecord,
   BankSettings
 } from '../types.js';
 
@@ -36,6 +37,7 @@ interface DBData {
   otps: OTPRecord[];
   beneficiaries?: Beneficiary[];
   transferCodes?: TransferCodeRecord[];
+  ownerResetTokens?: OwnerResetTokenRecord[];
 }
 
 let DATA_DIR = path.join(process.cwd(), 'data');
@@ -132,8 +134,13 @@ function loadDB(): DBData {
       auditLogs: [],
       otps: [],
       beneficiaries: [],
-      transferCodes: []
+      transferCodes: [],
+      ownerResetTokens: []
     };
+  }
+
+  if (!loadedData.ownerResetTokens) {
+    loadedData.ownerResetTokens = [];
   }
 
   // If DB has owner user, permanently mark as initialized
@@ -156,10 +163,11 @@ function saveDB(data: DBData) {
 
 export class BankStore {
   private data: DBData;
+  public readyPromise: Promise<void>;
 
   constructor() {
     this.data = loadDB();
-    this.initPersistence().catch(err => {
+    this.readyPromise = this.initPersistence().catch(err => {
       console.warn('Initial background persistence loading encountered an error:', err);
     });
   }
@@ -179,6 +187,9 @@ export class BankStore {
         if (res.rows.length > 0 && res.rows[0].data) {
           const pgData = res.rows[0].data as DBData;
           if (pgData && Array.isArray(pgData.users) && pgData.users.length > 0) {
+            pgData.users.forEach((u: any) => {
+              if (!u.passwordHash && u.password) u.passwordHash = u.password;
+            });
             this.data = { ...this.data, ...pgData };
             console.log(`[POSTGRES] Loaded persistent data: ${this.data.users.length} users, ${this.data.accounts.length} accounts, ${this.data.transactions.length} transactions.`);
             saveDB(this.data);
@@ -201,6 +212,9 @@ export class BankStore {
         if (snap && snap.exists && snap.exists() && snap.data()?.data) {
           const fsData = snap.data().data as DBData;
           if (fsData && Array.isArray(fsData.users) && fsData.users.length > 0) {
+            fsData.users.forEach((u: any) => {
+              if (!u.passwordHash && u.password) u.passwordHash = u.password;
+            });
             this.data = { ...this.data, ...fsData };
             console.log(`[FIRESTORE] Loaded persistent data: ${this.data.users.length} users, ${this.data.accounts.length} accounts, ${this.data.transactions.length} transactions.`);
             saveDB(this.data);
@@ -221,8 +235,14 @@ export class BankStore {
     }
   }
 
-  private persist() {
+  private async persist() {
     saveDB(this.data);
+
+    if (this.readyPromise) {
+      try {
+        await this.readyPromise;
+      } catch (_) {}
+    }
 
     if (pgPool) {
       pgPool.query(
@@ -1055,6 +1075,60 @@ export class BankStore {
     };
     this.persist();
     return this.data.settings;
+  }
+
+  public createOwnerResetToken(userId: string, email: string): OwnerResetTokenRecord {
+    if (!this.data.ownerResetTokens) this.data.ownerResetTokens = [];
+
+    // Invalidate existing pending reset tokens for this user
+    this.data.ownerResetTokens.forEach(t => {
+      if (t.userId === userId && !t.used) {
+        t.used = true;
+      }
+    });
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const record: OwnerResetTokenRecord = {
+      id: 'owntok_' + crypto.randomBytes(6).toString('hex'),
+      userId,
+      email: email.toLowerCase(),
+      token,
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+      used: false,
+      createdAt: new Date().toISOString()
+    };
+
+    this.data.ownerResetTokens.unshift(record);
+    this.persist();
+    return record;
+  }
+
+  public getOwnerResetToken(token: string): OwnerResetTokenRecord | undefined {
+    if (!this.data.ownerResetTokens) this.data.ownerResetTokens = [];
+    return this.data.ownerResetTokens.find(t => t.token.trim() === token.trim());
+  }
+
+  public verifyOwnerResetToken(token: string): { valid: boolean; error?: string; record?: OwnerResetTokenRecord } {
+    const record = this.getOwnerResetToken(token);
+    if (!record) {
+      return { valid: false, error: 'Invalid or expired password reset token. Please request a new link.' };
+    }
+    if (record.used) {
+      return { valid: false, error: 'This password reset link has already been used. Please request a new link.' };
+    }
+    const expiresMs = new Date(record.expiresAt).getTime();
+    if (isNaN(expiresMs) || expiresMs < Date.now()) {
+      return { valid: false, error: 'This password reset link has expired (15-minute limit exceeded). Please request a new link.' };
+    }
+    return { valid: true, record };
+  }
+
+  public invalidateOwnerResetToken(token: string): void {
+    const record = this.getOwnerResetToken(token);
+    if (record) {
+      record.used = true;
+      this.persist();
+    }
   }
 }
 

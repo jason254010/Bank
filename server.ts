@@ -83,6 +83,18 @@ function getClientIp(req: Request): string {
 
 // ==================== API ROUTES ====================
 
+// Middleware to ensure persistent store has finished initializing before processing API requests
+app.use('/api', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (store.readyPromise) {
+      await store.readyPromise;
+    }
+  } catch (e) {
+    console.warn('Store initial persistence wait warning:', e);
+  }
+  next();
+});
+
 // System status (Check if owner exists)
 app.get('/api/system/status', (req, res) => {
   const hasOwner = store.hasOwner();
@@ -178,7 +190,8 @@ app.post('/api/auth/login', (req, res) => {
     return res.status(403).json({ error: `This account is not authorized as ${loginType.toLowerCase()}.` });
   }
 
-  if (user.passwordHash !== password) {
+  const storedPassword = user.passwordHash || (user as any).password;
+  if (storedPassword !== password) {
     store.logAudit({
       userId: user.id,
       userEmail: user.email,
@@ -371,6 +384,125 @@ app.post('/api/auth/reset-password', (req, res) => {
   });
 
   res.json({ message: 'Password has been reset successfully. You can now log in.' });
+});
+
+// Owner / Admin Forgot Password Request
+app.post('/api/auth/owner/forgot-password', (req, res) => {
+  const { email } = req.body || {};
+  if (!email || typeof email !== 'string' || !email.trim()) {
+    return res.status(400).json({ error: 'Please enter a valid administrator email address.' });
+  }
+
+  const cleanEmail = email.trim().toLowerCase();
+  const user = store.findUserByEmail(cleanEmail);
+
+  // Requirement: If the email is not registered or not an OWNER, display generic message without revealing existence
+  if (!user || user.role !== 'OWNER') {
+    return res.json({
+      message: 'If an account exists for this email, a reset link has been sent.'
+    });
+  }
+
+  const tokenRecord = store.createOwnerResetToken(user.id, user.email);
+
+  const host = req.get('host') || 'localhost:3000';
+  const protocol = req.protocol || 'http';
+  const resetLink = `${protocol}://${host}/admin?token=${tokenRecord.token}`;
+
+  store.logAudit({
+    userId: user.id,
+    userEmail: user.email,
+    action: 'OWNER_PASSWORD_RESET_REQUESTED',
+    details: `Generated 15-min single-use reset token for owner (${user.email}): ${resetLink}`,
+    ipAddress: getClientIp(req),
+    status: 'SUCCESS'
+  });
+
+  store.createNotification({
+    userId: user.id,
+    title: 'Admin Password Reset Link Generated',
+    message: `A password reset link was requested for your administrator account (${user.email}). Reset Link: ${resetLink} (Expires in 15 minutes)`,
+    type: 'SYSTEM_ALERT'
+  });
+
+  return res.json({
+    message: 'If an account exists for this email, a reset link has been sent.',
+    resetLink,
+    token: tokenRecord.token
+  });
+});
+
+// Verify Owner Reset Token
+app.get('/api/auth/owner/verify-reset-token', (req, res) => {
+  const token = req.query.token;
+  if (!token || typeof token !== 'string' || !token.trim()) {
+    return res.status(400).json({ valid: false, error: 'Reset token is required.' });
+  }
+
+  const verification = store.verifyOwnerResetToken(token.trim());
+  if (!verification.valid) {
+    return res.status(400).json({ valid: false, error: verification.error });
+  }
+
+  res.json({ valid: true, email: verification.record?.email });
+});
+
+// Owner Reset Password Submit
+app.post('/api/auth/owner/reset-password', (req, res) => {
+  const { token, newPassword, confirmPassword } = req.body || {};
+
+  if (!token || typeof token !== 'string' || !token.trim()) {
+    return res.status(400).json({ error: 'Reset token is missing.' });
+  }
+
+  if (!newPassword || typeof newPassword !== 'string' || !newPassword.trim()) {
+    return res.status(400).json({ error: 'Please enter a new password.' });
+  }
+
+  if (newPassword !== confirmPassword) {
+    return res.status(400).json({ error: 'New password and confirmation password do not match.' });
+  }
+
+  if (newPassword.trim().length < 6) {
+    return res.status(400).json({ error: 'New password must be at least 6 characters long.' });
+  }
+
+  const verification = store.verifyOwnerResetToken(token.trim());
+  if (!verification.valid || !verification.record) {
+    return res.status(400).json({ error: verification.error || 'Invalid or expired password reset link.' });
+  }
+
+  const user = store.findUserById(verification.record.userId);
+  if (!user || user.role !== 'OWNER') {
+    return res.status(400).json({ error: 'Administrator account not found.' });
+  }
+
+  // Update owner password securely (store passwordHash)
+  store.updateUser(user.id, { passwordHash: newPassword.trim() });
+
+  // Invalidate reset token so it cannot be reused
+  store.invalidateOwnerResetToken(token.trim());
+
+  store.logAudit({
+    userId: user.id,
+    userEmail: user.email,
+    action: 'OWNER_PASSWORD_RESET_SUCCESS',
+    details: 'Owner administrator password was successfully updated via single-use reset token.',
+    ipAddress: getClientIp(req),
+    status: 'SUCCESS'
+  });
+
+  store.createNotification({
+    userId: user.id,
+    title: 'Admin Password Changed',
+    message: 'Your Nova Trust Bank administrator password was successfully changed.',
+    type: 'PASSWORD_CHANGED'
+  });
+
+  res.json({
+    success: true,
+    message: 'Your administrator password has been updated successfully. You can now log in with your new password.'
+  });
 });
 
 // ==================== PHASE 2: OWNER DASHBOARD API ====================
