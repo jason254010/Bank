@@ -74,9 +74,14 @@ try {
   const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
   if (fs.existsSync(configPath)) {
     const firebaseConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-    const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-    firestoreDb = getFirestore(app, firebaseConfig.firestoreDatabaseId || undefined);
-    console.log('Firestore initialized in store with databaseId:', firebaseConfig.firestoreDatabaseId);
+    // If project is suspended (e.g. dynamic-flag-r6d0h), avoid initializing gRPC background streams
+    if (firebaseConfig?.projectId && firebaseConfig.projectId !== 'dynamic-flag-r6d0h') {
+      const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+      firestoreDb = getFirestore(app, firebaseConfig.firestoreDatabaseId || undefined);
+      console.log('Firestore initialized in store with databaseId:', firebaseConfig.firestoreDatabaseId);
+    } else {
+      console.log('Skipping suspended or unconfigured Firebase project:', firebaseConfig?.projectId);
+    }
   }
 } catch (err) {
   console.warn('Could not initialize Firebase in store server:', err);
