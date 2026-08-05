@@ -209,17 +209,20 @@ export const OwnerLogin: React.FC<OwnerLoginProps> = ({ onSwitchToCustomer, onGo
     try {
       const baseUrl = window.location.origin || 'http://localhost:3000';
       const urlObj = new URL(linkUrl, baseUrl);
-      const token = urlObj.searchParams.get('token');
+      const token = urlObj.searchParams.get('token') || urlObj.searchParams.get('resetToken') || urlObj.searchParams.get('ownerResetToken');
       if (token) {
         setResetToken(token);
         setMode('RESET_PASSWORD');
         verifyToken(token);
+        try {
+          window.history.pushState({}, '', `/admin?token=${encodeURIComponent(token)}`);
+        } catch (_) {}
       } else {
-        window.location.href = linkUrl;
+        try {
+          window.history.pushState({}, '', urlObj.pathname + urlObj.search);
+        } catch (_) {}
       }
-    } catch (_) {
-      window.location.href = linkUrl;
-    }
+    } catch (_) {}
   };
 
   return (

@@ -2058,14 +2058,12 @@ app.use((err: any, req: Request, res: Response, next: NextFunction) => {
 
 // ==================== VITE MIDDLEWARE & SERVER LISTEN ====================
 
-async function startServer() {
-  // Ensure all persistent records from PostgreSQL or Firestore database are loaded on boot
-  try {
-    await store.initPersistence();
-  } catch (err) {
-    console.warn('Failed to initialize database persistence on startup:', err);
-  }
+// Initialize store persistence at module load
+store.initPersistence().catch(err => {
+  console.warn('Failed to initialize database persistence on startup:', err);
+});
 
+async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
@@ -2086,4 +2084,10 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;
+export { app };
+
