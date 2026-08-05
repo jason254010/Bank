@@ -54,38 +54,46 @@ const AppContent: React.FC = () => {
   }, []);
 
   const navigateToAdmin = () => {
-    if (window.location.pathname !== '/admin') {
-      window.history.pushState({}, '', '/admin');
-    }
+    try {
+      if (window.location.pathname !== '/admin') {
+        window.history.pushState({}, '', '/admin');
+      }
+    } catch (_) {}
     setRouteView('OWNER_LOGIN');
   };
 
   const navigateToCustomerLogin = () => {
-    if (window.location.pathname !== '/login') {
-      window.history.pushState({}, '', '/login');
-    }
+    try {
+      if (window.location.pathname !== '/login') {
+        window.history.pushState({}, '', '/login');
+      }
+    } catch (_) {}
     setRouteView('CUSTOMER_LOGIN');
   };
 
   const navigateToLanding = () => {
-    if (window.location.pathname !== '/') {
-      window.history.pushState({}, '', '/');
-    }
+    try {
+      if (window.location.pathname !== '/') {
+        window.history.pushState({}, '', '/');
+      }
+    } catch (_) {}
     setRouteView('LANDING');
   };
 
   // Ensure path is consistent when user logs in
   useEffect(() => {
     if (user) {
-      if (user.role === 'OWNER') {
-        if (window.location.pathname !== '/admin') {
-          window.history.replaceState({}, '', '/admin');
+      try {
+        if (user.role === 'OWNER') {
+          if (window.location.pathname !== '/admin') {
+            window.history.replaceState({}, '', '/admin');
+          }
+        } else if (user.role === 'CUSTOMER') {
+          if (window.location.pathname !== '/dashboard' && window.location.pathname !== '/login') {
+            window.history.replaceState({}, '', '/dashboard');
+          }
         }
-      } else if (user.role === 'CUSTOMER') {
-        if (window.location.pathname !== '/dashboard' && window.location.pathname !== '/login') {
-          window.history.replaceState({}, '', '/dashboard');
-        }
-      }
+      } catch (_) {}
     }
   }, [user]);
 

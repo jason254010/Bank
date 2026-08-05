@@ -97,7 +97,7 @@
       "email": "joe254010@gmail.com",
       "fullName": "Bank Administrator",
       "createdAt": "2026-08-05T05:39:12.039Z",
-      "lastLoginAt": "2026-08-05T09:30:17.003Z",
+      "lastLoginAt": "2026-08-05T10:02:12.113Z",
       "lastLoginIp": "127.0.0.1",
       "passwordHash": "Godstime$$1",
       "emailVerified": true
@@ -6086,35 +6086,53 @@
       "title": "Admin Password Changed",
       "message": "Your Nova Trust Bank administrator password was successfully changed.",
       "type": "PASSWORD_CHANGED",
+      "id": "ntf_4a4d898c4c4f",
+      "read": false,
+      "createdAt": "2026-08-05T10:02:16.324Z"
+    },
+    {
+      "userId": "usr_6c2e401fff53",
+      "title": "Admin Password Reset Link Generated",
+      "message": "A password reset link was requested for your administrator account (joe254010@gmail.com). Reset Link: http://localhost:3000/admin?token=90c443f94a4844d5e48b527710f25c8e50049dfc16f9896bd19651397af1d7dd (Expires in 15 minutes)",
+      "type": "SYSTEM_ALERT",
+      "id": "ntf_014edf4485c1",
+      "read": false,
+      "createdAt": "2026-08-05T10:02:15.047Z"
+    },
+    {
       "id": "ntf_fcf0100bed1b",
       "read": false,
+      "type": "PASSWORD_CHANGED",
+      "title": "Admin Password Changed",
+      "userId": "usr_6c2e401fff53",
+      "message": "Your Nova Trust Bank administrator password was successfully changed.",
       "createdAt": "2026-08-05T09:30:16.993Z"
     },
     {
-      "userId": "usr_6c2e401fff53",
-      "title": "Admin Password Reset Link Generated",
-      "message": "A password reset link was requested for your administrator account (joe254010@gmail.com). Reset Link: http://localhost:3000/admin?token=96b8c8f0006c873848c138f62d5dcddbbc999e17b39b87409c6d7b6e45d1bf81 (Expires in 15 minutes)",
-      "type": "SYSTEM_ALERT",
       "id": "ntf_2fe8e479d0d1",
       "read": false,
+      "type": "SYSTEM_ALERT",
+      "title": "Admin Password Reset Link Generated",
+      "userId": "usr_6c2e401fff53",
+      "message": "A password reset link was requested for your administrator account (joe254010@gmail.com). Reset Link: http://localhost:3000/admin?token=96b8c8f0006c873848c138f62d5dcddbbc999e17b39b87409c6d7b6e45d1bf81 (Expires in 15 minutes)",
       "createdAt": "2026-08-05T09:30:15.963Z"
     },
     {
-      "userId": "usr_6c2e401fff53",
-      "title": "Admin Password Changed",
-      "message": "Your Nova Trust Bank administrator password was successfully changed.",
-      "type": "PASSWORD_CHANGED",
       "id": "ntf_f9fb1cb73681",
       "read": false,
+      "type": "PASSWORD_CHANGED",
+      "title": "Admin Password Changed",
+      "userId": "usr_6c2e401fff53",
+      "message": "Your Nova Trust Bank administrator password was successfully changed.",
       "createdAt": "2026-08-05T09:30:15.296Z"
     },
     {
-      "userId": "usr_6c2e401fff53",
-      "title": "Admin Password Reset Link Generated",
-      "message": "A password reset link was requested for your administrator account (joe254010@gmail.com). Reset Link: http://localhost:3000/admin?token=6f261f50068f788aaec4f55289b5980c178109dd9e79039a7993888baa1635b1 (Expires in 15 minutes)",
-      "type": "SYSTEM_ALERT",
       "id": "ntf_7465d0b38cb9",
       "read": false,
+      "type": "SYSTEM_ALERT",
+      "title": "Admin Password Reset Link Generated",
+      "userId": "usr_6c2e401fff53",
+      "message": "A password reset link was requested for your administrator account (joe254010@gmail.com). Reset Link: http://localhost:3000/admin?token=6f261f50068f788aaec4f55289b5980c178109dd9e79039a7993888baa1635b1 (Expires in 15 minutes)",
       "createdAt": "2026-08-05T09:30:12.867Z"
     },
     {
@@ -6436,62 +6454,102 @@
     {
       "userId": "usr_6c2e401fff53",
       "userEmail": "joe254010@gmail.com",
-      "action": "LOGIN_SUCCESS",
-      "details": "OWNER logged in successfully",
-      "ipAddress": "127.0.0.1",
-      "status": "SUCCESS",
-      "id": "log_d8176167652a",
-      "timestamp": "2026-08-05T09:30:17.006Z"
-    },
-    {
-      "userId": "usr_6c2e401fff53",
-      "userEmail": "joe254010@gmail.com",
       "action": "OWNER_PASSWORD_RESET_SUCCESS",
       "details": "Owner administrator password was successfully updated via single-use reset token.",
       "ipAddress": "127.0.0.1",
       "status": "SUCCESS",
-      "id": "log_3597be07c4a0",
-      "timestamp": "2026-08-05T09:30:16.991Z"
+      "id": "log_3abed89f2a1a",
+      "timestamp": "2026-08-05T10:02:16.322Z"
     },
     {
       "userId": "usr_6c2e401fff53",
       "userEmail": "joe254010@gmail.com",
       "action": "OWNER_PASSWORD_RESET_REQUESTED",
+      "details": "Generated 15-min single-use reset token for owner (joe254010@gmail.com): http://localhost:3000/admin?token=90c443f94a4844d5e48b527710f25c8e50049dfc16f9896bd19651397af1d7dd",
+      "ipAddress": "127.0.0.1",
+      "status": "SUCCESS",
+      "id": "log_6f77e839954c",
+      "timestamp": "2026-08-05T10:02:15.043Z"
+    },
+    {
+      "userId": "usr_6c2e401fff53",
+      "userEmail": "joe254010@gmail.com",
+      "action": "LOGIN_SUCCESS",
+      "details": "OWNER logged in successfully",
+      "ipAddress": "127.0.0.1",
+      "status": "SUCCESS",
+      "id": "log_98050271a2d2",
+      "timestamp": "2026-08-05T10:02:12.115Z"
+    },
+    {
+      "userId": "usr_6c2e401fff53",
+      "userEmail": "joe254010@gmail.com",
+      "action": "LOGIN_SUCCESS",
+      "details": "OWNER logged in successfully",
+      "ipAddress": "2605:59c0:e4d:2910:50b8:4751:e20e:6678, 169.254.169.126",
+      "status": "SUCCESS",
+      "id": "log_0b45abbc9d40",
+      "timestamp": "2026-08-05T09:40:02.783Z"
+    },
+    {
+      "userId": "usr_6c2e401fff53",
+      "userEmail": "joe254010@gmail.com",
+      "action": "LOGIN_SUCCESS",
+      "details": "OWNER logged in successfully",
+      "ipAddress": "2605:59c0:e4d:2910:50b8:4751:e20e:6678, 169.254.169.126",
+      "status": "SUCCESS",
+      "id": "log_7dd28aa4e048",
+      "timestamp": "2026-08-05T09:31:12.512Z"
+    },
+    {
+      "id": "log_3597be07c4a0",
+      "action": "OWNER_PASSWORD_RESET_SUCCESS",
+      "status": "SUCCESS",
+      "userId": "usr_6c2e401fff53",
+      "details": "Owner administrator password was successfully updated via single-use reset token.",
+      "ipAddress": "127.0.0.1",
+      "timestamp": "2026-08-05T09:30:16.991Z",
+      "userEmail": "joe254010@gmail.com"
+    },
+    {
+      "id": "log_50a59f3dbe23",
+      "action": "OWNER_PASSWORD_RESET_REQUESTED",
+      "status": "SUCCESS",
+      "userId": "usr_6c2e401fff53",
       "details": "Generated 15-min single-use reset token for owner (joe254010@gmail.com): http://localhost:3000/admin?token=96b8c8f0006c873848c138f62d5dcddbbc999e17b39b87409c6d7b6e45d1bf81",
       "ipAddress": "127.0.0.1",
-      "status": "SUCCESS",
-      "id": "log_50a59f3dbe23",
-      "timestamp": "2026-08-05T09:30:15.960Z"
+      "timestamp": "2026-08-05T09:30:15.960Z",
+      "userEmail": "joe254010@gmail.com"
     },
     {
-      "userId": "usr_6c2e401fff53",
-      "userEmail": "joe254010@gmail.com",
+      "id": "log_ddf4b9a8adc0",
       "action": "LOGIN_SUCCESS",
+      "status": "SUCCESS",
+      "userId": "usr_6c2e401fff53",
       "details": "OWNER logged in successfully",
       "ipAddress": "127.0.0.1",
-      "status": "SUCCESS",
-      "id": "log_ddf4b9a8adc0",
-      "timestamp": "2026-08-05T09:30:15.310Z"
+      "timestamp": "2026-08-05T09:30:15.310Z",
+      "userEmail": "joe254010@gmail.com"
     },
     {
-      "userId": "usr_6c2e401fff53",
-      "userEmail": "joe254010@gmail.com",
+      "id": "log_4b33c6af98a9",
       "action": "OWNER_PASSWORD_RESET_SUCCESS",
+      "status": "SUCCESS",
+      "userId": "usr_6c2e401fff53",
       "details": "Owner administrator password was successfully updated via single-use reset token.",
       "ipAddress": "127.0.0.1",
-      "status": "SUCCESS",
-      "id": "log_4b33c6af98a9",
-      "timestamp": "2026-08-05T09:30:15.294Z"
+      "timestamp": "2026-08-05T09:30:15.294Z",
+      "userEmail": "joe254010@gmail.com"
     },
     {
-      "userId": "usr_6c2e401fff53",
-      "userEmail": "joe254010@gmail.com",
+      "id": "log_96fff52d09fa",
       "action": "OWNER_PASSWORD_RESET_REQUESTED",
+      "status": "SUCCESS",
+      "userId": "usr_6c2e401fff53",
       "details": "Generated 15-min single-use reset token for owner (joe254010@gmail.com): http://localhost:3000/admin?token=6f261f50068f788aaec4f55289b5980c178109dd9e79039a7993888baa1635b1",
       "ipAddress": "127.0.0.1",
-      "status": "SUCCESS",
-      "id": "log_96fff52d09fa",
-      "timestamp": "2026-08-05T09:30:12.864Z"
+      "timestamp": "2026-08-05T09:30:12.864Z",
+      "userEmail": "joe254010@gmail.com"
     },
     {
       "id": "log_d38e04277dfd",
@@ -7100,22 +7158,31 @@
   ],
   "ownerResetTokens": [
     {
-      "id": "owntok_dd376b7c3e20",
+      "id": "owntok_8e2732e57f13",
       "userId": "usr_6c2e401fff53",
       "email": "joe254010@gmail.com",
-      "token": "96b8c8f0006c873848c138f62d5dcddbbc999e17b39b87409c6d7b6e45d1bf81",
-      "expiresAt": "2026-08-05T09:45:15.837Z",
+      "token": "90c443f94a4844d5e48b527710f25c8e50049dfc16f9896bd19651397af1d7dd",
+      "expiresAt": "2026-08-05T10:17:12.125Z",
       "used": true,
-      "createdAt": "2026-08-05T09:30:15.837Z"
+      "createdAt": "2026-08-05T10:02:12.125Z"
+    },
+    {
+      "id": "owntok_dd376b7c3e20",
+      "used": true,
+      "email": "joe254010@gmail.com",
+      "token": "96b8c8f0006c873848c138f62d5dcddbbc999e17b39b87409c6d7b6e45d1bf81",
+      "userId": "usr_6c2e401fff53",
+      "createdAt": "2026-08-05T09:30:15.837Z",
+      "expiresAt": "2026-08-05T09:45:15.837Z"
     },
     {
       "id": "owntok_8b02002569c3",
-      "userId": "usr_6c2e401fff53",
+      "used": true,
       "email": "joe254010@gmail.com",
       "token": "6f261f50068f788aaec4f55289b5980c178109dd9e79039a7993888baa1635b1",
-      "expiresAt": "2026-08-05T09:45:11.797Z",
-      "used": true,
-      "createdAt": "2026-08-05T09:30:11.797Z"
+      "userId": "usr_6c2e401fff53",
+      "createdAt": "2026-08-05T09:30:11.797Z",
+      "expiresAt": "2026-08-05T09:45:11.797Z"
     },
     {
       "id": "owntok_38c679c72a10",

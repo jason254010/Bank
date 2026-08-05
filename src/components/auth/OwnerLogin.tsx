@@ -181,11 +181,13 @@ export const OwnerLogin: React.FC<OwnerLoginProps> = ({ onSwitchToCustomer, onGo
       showToast('Password reset successfully! Please log in.', 'success');
       
       // Clear token from URL
-      const url = new URL(window.location.href);
-      url.searchParams.delete('token');
-      url.searchParams.delete('resetToken');
-      url.searchParams.delete('ownerResetToken');
-      window.history.replaceState({}, '', url.pathname);
+      try {
+        if (window.history && window.history.replaceState) {
+          window.history.replaceState({}, '', window.location.pathname || '/admin');
+        }
+      } catch (e) {
+        console.warn('Could not replace history state:', e);
+      }
 
       // Reset form states & switch back to login after 2.5 seconds
       setTimeout(() => {
@@ -205,7 +207,8 @@ export const OwnerLogin: React.FC<OwnerLoginProps> = ({ onSwitchToCustomer, onGo
 
   const openTestResetLink = (linkUrl: string) => {
     try {
-      const urlObj = new URL(linkUrl);
+      const baseUrl = window.location.origin || 'http://localhost:3000';
+      const urlObj = new URL(linkUrl, baseUrl);
       const token = urlObj.searchParams.get('token');
       if (token) {
         setResetToken(token);

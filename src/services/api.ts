@@ -50,10 +50,27 @@ export async function apiRequest<T = any>(
         continue;
       }
 
-      const data = await response.json();
+      const contentType = response.headers.get('content-type');
+      let data: any;
+
+      if (contentType && contentType.includes('application/json')) {
+        try {
+          data = await response.json();
+        } catch (_) {
+          const text = await response.text().catch(() => '');
+          data = { error: text || `Invalid server response (${response.status})` };
+        }
+      } else {
+        const text = await response.text().catch(() => '');
+        try {
+          data = JSON.parse(text);
+        } catch (_) {
+          data = { error: text || `Server error (${response.status})` };
+        }
+      }
 
       if (!response.ok) {
-        throw new Error(data.error || 'An error occurred while communicating with the bank server');
+        throw new Error(data.error || data.message || `An error occurred while communicating with the bank server (${response.status})`);
       }
 
       return data as T;
