@@ -419,19 +419,46 @@ export const OwnerDashboard: React.FC<OwnerDashboardProps> = ({
   const loadData = async (showFullLoading = false) => {
     if (showFullLoading) setIsLoading(true);
     try {
-      const [custsRes, txsRes, convsRes, auditRes, codesRes] = await Promise.all([
+      const [custsResult, txsResult, convsResult, auditResult, codesResult] = await Promise.allSettled([
         apiRequest<any[]>('/api/admin/customers'),
         apiRequest<Transaction[]>('/api/admin/transactions'),
         apiRequest<SupportConversation[]>('/api/support/conversations'),
         apiRequest<AuditLog[]>('/api/admin/audit-logs'),
-        apiRequest<TransferCodeRecord[]>('/api/admin/transfer-codes').catch(() => [])
+        apiRequest<TransferCodeRecord[]>('/api/admin/transfer-codes')
       ]);
 
-      setCustomers(custsRes);
-      setTransactions(txsRes);
-      setConversations(convsRes);
-      setAuditLogs(auditRes);
-      setTransferCodes(codesRes || []);
+      if (custsResult.status === 'fulfilled') {
+        setCustomers(custsResult.value || []);
+      } else {
+        console.warn('Failed to load customers:', custsResult.reason);
+        if (showFullLoading) {
+          showToast(custsResult.reason?.message || 'Failed to load customer list', 'error');
+        }
+      }
+
+      if (txsResult.status === 'fulfilled') {
+        setTransactions(txsResult.value || []);
+      } else {
+        console.warn('Failed to load transactions:', txsResult.reason);
+      }
+
+      if (convsResult.status === 'fulfilled') {
+        setConversations(convsResult.value || []);
+      } else {
+        console.warn('Failed to load conversations:', convsResult.reason);
+      }
+
+      if (auditResult.status === 'fulfilled') {
+        setAuditLogs(auditResult.value || []);
+      } else {
+        console.warn('Failed to load audit logs:', auditResult.reason);
+      }
+
+      if (codesResult.status === 'fulfilled') {
+        setTransferCodes(codesResult.value || []);
+      } else {
+        console.warn('Failed to load transfer codes:', codesResult.reason);
+      }
     } catch (e: any) {
       if (showFullLoading) {
         showToast(e.message || 'Failed to load administrative bank data', 'error');

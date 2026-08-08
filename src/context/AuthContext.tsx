@@ -107,15 +107,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setAccount(res.account || null);
 
       if (res.user && res.user.role === 'CUSTOMER') {
-        const dashRes = await apiRequest('/api/customer/dashboard');
-        setUnreadNotifications(dashRes.unreadNotifications || 0);
+        try {
+          const dashRes = await apiRequest('/api/customer/dashboard');
+          setUnreadNotifications(dashRes.unreadNotifications || 0);
+        } catch (dashErr) {
+          console.warn('Non-fatal error loading customer dashboard notifications:', dashErr);
+        }
       }
-    } catch (e) {
+    } catch (e: any) {
       console.warn('Session restoration failed:', e);
-      clearStoredToken();
-      setUser(null);
-      setAccount(null);
-      setToken(null);
+      // Only clear token if unauthenticated (401 status)
+      if (e.status === 401 || e.message?.includes('Unauthorized') || e.message?.includes('Invalid session')) {
+        clearStoredToken();
+        setUser(null);
+        setAccount(null);
+        setToken(null);
+      }
     } finally {
       setIsLoading(false);
     }

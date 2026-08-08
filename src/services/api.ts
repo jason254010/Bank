@@ -70,7 +70,10 @@ export async function apiRequest<T = any>(
       }
 
       if (!response.ok) {
-        throw new Error(data.error || data.message || `An error occurred while communicating with the bank server (${response.status})`);
+        const errorMsg = data.error || data.message || `An error occurred while communicating with the bank server (${response.status})`;
+        const error = new Error(errorMsg) as Error & { status?: number };
+        error.status = response.status;
+        throw error;
       }
 
       return data as T;

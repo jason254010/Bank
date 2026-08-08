@@ -1628,12 +1628,12 @@ app.delete('/api/customer/beneficiaries/:id', requireAuth, (req, res) => {
 
 // ==================== PHASE 7: REAL-TIME CUSTOMER SUPPORT API ====================
 
-app.get('/api/support/conversations', requireAuth, (req, res) => {
+app.get('/api/support/conversations', requireAuth, async (req, res) => {
   const user = (req as any).user;
   if (user.role === 'OWNER') {
     res.json(store.getAllConversations());
   } else {
-    const conv = store.getOrCreateConversation(user);
+    const conv = await store.getOrCreateConversation(user);
     res.json([conv]);
   }
 });
