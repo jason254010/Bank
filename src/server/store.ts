@@ -20,6 +20,7 @@ import {
   AccountType,
   TransferCodeRecord,
   OwnerResetTokenRecord,
+  SessionRecord,
   BankSettings
 } from '../types.js';
 
@@ -38,6 +39,7 @@ interface DBData {
   beneficiaries?: Beneficiary[];
   transferCodes?: TransferCodeRecord[];
   ownerResetTokens?: OwnerResetTokenRecord[];
+  sessions?: SessionRecord[];
 }
 
 let DATA_DIR = path.join(process.cwd(), 'data');
@@ -52,11 +54,13 @@ if (pgDbUrl) {
       connectionString: pgDbUrl,
       ssl: pgDbUrl.includes('localhost') || pgDbUrl.includes('127.0.0.1') ? false : { rejectUnauthorized: false }
     });
-    console.log('PostgreSQL database connection pool initialized.');
+    console.log('[POSTGRES] Connection pool initialized successfully.');
   } catch (err) {
-    console.warn('Could not initialize PostgreSQL pool:', err);
+    console.error('[POSTGRES] Failed to initialize connection pool:', err);
     pgPool = null;
   }
+} else if (process.env.NODE_ENV === 'production') {
+  console.error('[CRITICAL DATABASE CONFIGURATION ERROR] DATABASE_URL is NOT set in production! Ephemeral local fallback is disabled for production reliability.');
 }
 
 // Initialize Firebase Firestore for database persistence
@@ -143,6 +147,10 @@ function loadDB(): DBData {
     loadedData.ownerResetTokens = [];
   }
 
+  if (!loadedData.sessions) {
+    loadedData.sessions = [];
+  }
+
   // If DB has owner user, permanently mark as initialized
   if (loadedData.users && loadedData.users.some(u => u.role === 'OWNER')) {
     loadedData.isInitialized = true;
@@ -173,6 +181,11 @@ export class BankStore {
   }
 
   public async initPersistence(): Promise<void> {
+    // If running in production and DATABASE_URL is missing, fail fast with a configuration error
+    if (process.env.NODE_ENV === 'production' && !pgPool) {
+      throw new Error('[CRITICAL DATABASE CONFIGURATION ERROR] DATABASE_URL is missing! PostgreSQL is required as the single source of truth in production.');
+    }
+
     // 1. Check PostgreSQL first if available
     if (pgPool) {
       try {
@@ -204,6 +217,7 @@ export class BankStore {
               beneficiaries: [],
               transferCodes: [],
               ownerResetTokens: [],
+              sessions: [],
               ...pgData
             };
             console.log(`[POSTGRES] Loaded persistent data: ${this.data.users.length} users, ${(this.data.accounts || []).length} accounts, ${(this.data.transactions || []).length} transactions.`);
@@ -211,12 +225,45 @@ export class BankStore {
             return;
           }
         }
-      } catch (err) {
-        console.warn('PostgreSQL table init or data load failed:', err);
+
+        // If PostgreSQL was empty, preserve any existing local initial seed data or create clean state and save to PG
+        if (!this.data || !Array.isArray(this.data.users)) {
+          this.data = {
+            isInitialized: false,
+            users: [],
+            accounts: [],
+            cards: [],
+            transactions: [],
+            notifications: [],
+            conversations: [],
+            messages: [],
+            auditLogs: [],
+            otps: [],
+            beneficiaries: [],
+            transferCodes: [],
+            ownerResetTokens: [],
+            sessions: []
+          };
+        }
+
+        await pgPool.query(
+          `INSERT INTO bank_store (id, data, updated_at)
+           VALUES ('main', $1, NOW())
+           ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW();`,
+          [JSON.stringify(this.data)]
+        );
+        console.log('[POSTGRES] Initialized main record in bank_store.');
+        saveDB(this.data);
+        return;
+      } catch (err: any) {
+        console.error('[POSTGRES] Database initialization failed:', err);
+        if (process.env.NODE_ENV === 'production') {
+          throw new Error(`[CRITICAL DATABASE CONFIGURATION ERROR] PostgreSQL initialization failed: ${err?.message || err}`);
+        }
       }
     }
 
-    // 2. Check Firestore with 2.5s timeout guard
+    // 2. Check Firestore with 2.5s timeout guard (if configured)
     if (firestoreDb) {
       try {
         const docRef = doc(firestoreDb, 'bank_data', 'main');
@@ -244,20 +291,14 @@ export class BankStore {
       }
     }
 
-    // 3. If remote database was empty but local DB file has users, write local DB data to remote DB
+    // 3. Fallback sync if users exist
     if (this.data.users && this.data.users.length > 0) {
-      this.persist();
+      await this.persist();
     }
   }
 
-  public async persist() {
+  public async persist(): Promise<void> {
     saveDB(this.data);
-
-    if (this.readyPromise) {
-      try {
-        await this.readyPromise;
-      } catch (_) {}
-    }
 
     if (pgPool) {
       try {
@@ -268,8 +309,13 @@ export class BankStore {
           [JSON.stringify(this.data)]
         );
       } catch (err: any) {
-        console.warn('Failed to sync bank store to PostgreSQL:', err?.message || err);
+        console.error('[POSTGRES] Failed to sync bank store to PostgreSQL:', err?.message || err);
+        if (process.env.NODE_ENV === 'production') {
+          throw new Error(`[POSTGRES ERROR] Failed to save data to PostgreSQL: ${err?.message || err}`);
+        }
       }
+    } else if (process.env.NODE_ENV === 'production') {
+      throw new Error('[CRITICAL DATABASE CONFIGURATION ERROR] DATABASE_URL is missing in production!');
     }
 
     if (firestoreDb) {
@@ -303,9 +349,8 @@ export class BankStore {
   // --- SYSTEM STATE ---
   public isInitialized(): boolean {
     if (this.data.isInitialized) return true;
-    if (this.data.users.some(u => u.role === 'OWNER')) {
+    if (this.data.users && this.data.users.some(u => u.role === 'OWNER')) {
       this.data.isInitialized = true;
-      this.persist();
       return true;
     }
     return false;
@@ -320,7 +365,7 @@ export class BankStore {
   }
 
   // --- USER MANAGEMENT ---
-  public createUser(userData: Omit<User, 'id' | 'createdAt'> & { createdAt?: string }): User {
+  public async createUser(userData: Omit<User, 'id' | 'createdAt'> & { createdAt?: string }): Promise<User> {
     const customerId = userData.role === 'CUSTOMER'
       ? (userData.customerId || `CID-${Math.floor(100000 + Math.random() * 900000)}`)
       : undefined;
@@ -333,7 +378,10 @@ export class BankStore {
       createdAt: userData.createdAt || new Date().toISOString()
     };
     this.data.users.push(user);
-    this.persist();
+    if (user.role === 'OWNER') {
+      this.data.isInitialized = true;
+    }
+    await this.persist();
     return user;
   }
 
@@ -366,27 +414,27 @@ export class BankStore {
     return this.data.users.filter(u => u.role === 'CUSTOMER');
   }
 
-  public updateUser(id: string, updates: Partial<User>): User | undefined {
+  public async updateUser(id: string, updates: Partial<User>): Promise<User | undefined> {
     const idx = this.data.users.findIndex(u => u.id === id);
     if (idx === -1) return undefined;
     this.data.users[idx] = { ...this.data.users[idx], ...updates };
-    this.persist();
+    await this.persist();
     return this.data.users[idx];
   }
 
-  public deleteUser(id: string): boolean {
+  public async deleteUser(id: string): Promise<boolean> {
     const user = this.findUserById(id);
     if (!user || user.role === 'OWNER') return false; // Cannot delete owner
 
     this.data.users = this.data.users.filter(u => u.id !== id);
     this.data.accounts = this.data.accounts.filter(a => a.userId !== id);
     this.data.cards = this.data.cards.filter(c => c.userId !== id);
-    this.persist();
+    await this.persist();
     return true;
   }
 
   // --- ACCOUNT MANAGEMENT ---
-  public createAccount(userId: string, accountType: AccountType, initialBalance: number, createdAt?: string): Account {
+  public async createAccount(userId: string, accountType: AccountType, initialBalance: number, createdAt?: string): Promise<Account> {
     // Generate 10-digit account number starting with 1092
     const randomDigits = Math.floor(100000 + Math.random() * 900000).toString();
     const accountNumber = `1092${randomDigits}`;
@@ -425,11 +473,11 @@ export class BankStore {
     };
     this.data.cards.push(card);
 
-    this.persist();
+    await this.persist();
     return account;
   }
 
-  public getAccountByUserId(userId: string): Account {
+  public async getAccountByUserId(userId: string): Promise<Account> {
     let acc = this.data.accounts.find(a => a.userId === userId);
     if (!acc) {
       const user = this.data.users.find(u => u.id === userId);
@@ -448,7 +496,7 @@ export class BankStore {
         createdAt: new Date().toISOString()
       };
       this.data.accounts.push(acc);
-      this.persist();
+      await this.persist();
     }
     return acc;
   }
@@ -461,24 +509,24 @@ export class BankStore {
     return this.data.cards.filter(c => c.userId === userId);
   }
 
-  public toggleCardLock(cardId: string, userId: string): DebitCard | undefined {
+  public async toggleCardLock(cardId: string, userId: string): Promise<DebitCard | undefined> {
     const card = this.data.cards.find(c => c.id === cardId && c.userId === userId);
     if (!card) return undefined;
     card.isLocked = !card.isLocked;
-    this.persist();
+    await this.persist();
     return card;
   }
 
-  public updateAccountStatus(userId: string, status: Account['status']): Account | undefined {
-    const acc = this.getAccountByUserId(userId);
+  public async updateAccountStatus(userId: string, status: Account['status']): Promise<Account | undefined> {
+    const acc = await this.getAccountByUserId(userId);
     if (!acc) return undefined;
     acc.status = status;
-    this.persist();
+    await this.persist();
     return acc;
   }
 
-  public updateAccountKycStatus(userId: string, kycStatus: Account['kycStatus']): Account | undefined {
-    const acc = this.getAccountByUserId(userId);
+  public async updateAccountKycStatus(userId: string, kycStatus: Account['kycStatus']): Promise<Account | undefined> {
+    const acc = await this.getAccountByUserId(userId);
     const user = this.findUserById(userId);
     if (user) {
       user.kycStatus = kycStatus;
@@ -486,12 +534,12 @@ export class BankStore {
     if (acc) {
       acc.kycStatus = kycStatus;
     }
-    this.persist();
+    await this.persist();
     return acc;
   }
 
-  public adjustAccountBalance(userId: string, amount: number, isCredit: boolean): { account: Account; newBalance: number } | undefined {
-    const acc = this.getAccountByUserId(userId);
+  public async adjustAccountBalance(userId: string, amount: number, isCredit: boolean): Promise<{ account: Account; newBalance: number } | undefined> {
+    const acc = await this.getAccountByUserId(userId);
     if (!acc) return undefined;
 
     if (isCredit) {
@@ -505,12 +553,12 @@ export class BankStore {
       acc.availableBalance -= amount;
     }
 
-    this.persist();
+    await this.persist();
     return { account: acc, newBalance: acc.balance };
   }
 
   // --- TRANSACTIONS ---
-  public createTransaction(txData: Omit<Transaction, 'id' | 'reference' | 'createdAt'>): Transaction {
+  public async createTransaction(txData: Omit<Transaction, 'id' | 'reference' | 'createdAt'>): Promise<Transaction> {
     const tx: Transaction = {
       ...txData,
       id: 'tx_' + crypto.randomBytes(6).toString('hex'),
@@ -518,21 +566,21 @@ export class BankStore {
       createdAt: new Date().toISOString()
     };
     this.data.transactions.unshift(tx); // Most recent first
-    this.persist();
+    await this.persist();
     return tx;
   }
 
-  public setTransactionsForUser(userId: string, newTxs: Transaction[]): void {
+  public async setTransactionsForUser(userId: string, newTxs: Transaction[]): Promise<void> {
     // Remove existing transactions for user
     this.data.transactions = this.data.transactions.filter(
       t => t.senderUserId !== userId && t.recipientUserId !== userId
     );
     // Push new transactions
     this.data.transactions.push(...newTxs);
-    this.recalculateRunningBalancesForUser(userId);
+    await this.recalculateRunningBalancesForUser(userId);
   }
 
-  public recalculateRunningBalancesForUser(userId: string): void {
+  public async recalculateRunningBalancesForUser(userId: string): Promise<void> {
     const userTxs = this.data.transactions.filter(
       t => t.senderUserId === userId || t.recipientUserId === userId
     );
@@ -552,7 +600,7 @@ export class BankStore {
     }
 
     // Update user account balance to match exact latest running balance
-    const acc = this.getAccountByUserId(userId);
+    const acc = await this.getAccountByUserId(userId);
     if (acc) {
       acc.balance = Math.round(running * 100) / 100;
       acc.availableBalance = Math.round(running * 100) / 100;
@@ -561,10 +609,10 @@ export class BankStore {
     // Sort all transactions descending (newest first)
     this.data.transactions.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
-    this.persist();
+    await this.persist();
   }
 
-  public addTransactionForUser(userId: string, txData: Omit<Transaction, 'id' | 'reference'> & { reference?: string }): Transaction {
+  public async addTransactionForUser(userId: string, txData: Omit<Transaction, 'id' | 'reference'> & { reference?: string }): Promise<Transaction> {
     const tx: Transaction = {
       ...txData,
       id: 'tx_' + crypto.randomBytes(6).toString('hex'),
@@ -572,11 +620,11 @@ export class BankStore {
     };
 
     this.data.transactions.push(tx);
-    this.recalculateRunningBalancesForUser(userId);
+    await this.recalculateRunningBalancesForUser(userId);
     return tx;
   }
 
-  public updateTransaction(txId: string, updates: Partial<Transaction>): Transaction | undefined {
+  public async updateTransaction(txId: string, updates: Partial<Transaction>): Promise<Transaction | undefined> {
     const idx = this.data.transactions.findIndex(t => t.id === txId);
     if (idx === -1) return undefined;
 
@@ -584,14 +632,14 @@ export class BankStore {
     const tx = this.data.transactions[idx];
     const affectedUser = tx.recipientUserId || tx.senderUserId;
     if (affectedUser) {
-      this.recalculateRunningBalancesForUser(affectedUser);
+      await this.recalculateRunningBalancesForUser(affectedUser);
     } else {
-      this.persist();
+      await this.persist();
     }
     return tx;
   }
 
-  public deleteTransaction(txId: string): boolean {
+  public async deleteTransaction(txId: string): Promise<boolean> {
     const tx = this.data.transactions.find(t => t.id === txId);
     if (!tx) return false;
 
@@ -599,9 +647,9 @@ export class BankStore {
     this.data.transactions = this.data.transactions.filter(t => t.id !== txId);
 
     if (affectedUser) {
-      this.recalculateRunningBalancesForUser(affectedUser);
+      await this.recalculateRunningBalancesForUser(affectedUser);
     } else {
-      this.persist();
+      await this.persist();
     }
     return true;
   }
@@ -617,7 +665,7 @@ export class BankStore {
   }
 
   // --- NOTIFICATIONS ---
-  public createNotification(notifData: Omit<Notification, 'id' | 'read' | 'createdAt'>): Notification {
+  public async createNotification(notifData: Omit<Notification, 'id' | 'read' | 'createdAt'>): Promise<Notification> {
     const notif: Notification = {
       ...notifData,
       id: 'ntf_' + crypto.randomBytes(6).toString('hex'),
@@ -625,7 +673,7 @@ export class BankStore {
       createdAt: new Date().toISOString()
     };
     this.data.notifications.unshift(notif);
-    this.persist();
+    await this.persist();
     return notif;
   }
 
@@ -633,19 +681,19 @@ export class BankStore {
     return this.data.notifications.filter(n => n.userId === userId);
   }
 
-  public markNotificationsRead(userId: string): void {
+  public async markNotificationsRead(userId: string): Promise<void> {
     this.data.notifications.forEach(n => {
       if (n.userId === userId) {
         n.read = true;
       }
     });
-    this.persist();
+    await this.persist();
   }
 
   // --- SUPPORT CHAT ---
-  public getOrCreateConversation(customer: User): SupportConversation {
+  public async getOrCreateConversation(customer: User): Promise<SupportConversation> {
     let conv = this.data.conversations.find(c => c.customerId === customer.id);
-    const acc = this.getAccountByUserId(customer.id);
+    const acc = await this.getAccountByUserId(customer.id);
 
     if (!conv) {
       conv = {
@@ -679,7 +727,7 @@ export class BankStore {
       };
       this.data.messages.push(welcomeMsg);
 
-      this.persist();
+      await this.persist();
     } else {
       // Ensure conversation has welcome message if empty
       const existingMsgs = this.getMessagesForConversation(conv.id);
@@ -694,7 +742,7 @@ export class BankStore {
           createdAt: new Date().toISOString()
         };
         this.data.messages.push(welcomeMsg);
-        this.persist();
+        await this.persist();
       }
     }
     return conv;
@@ -710,33 +758,33 @@ export class BankStore {
     );
   }
 
-  public updateConversationMode(
+  public async updateConversationMode(
     id: string,
     mode: 'INITIAL' | 'SELECT_MODE' | 'AI_ASSISTANT' | 'HUMAN_VERIFICATION' | 'HUMAN_SUPPORT',
     verifiedForHuman?: boolean
-  ): SupportConversation | undefined {
+  ): Promise<SupportConversation | undefined> {
     const conv = this.data.conversations.find(c => c.id === id);
     if (!conv) return undefined;
     conv.mode = mode;
     if (typeof verifiedForHuman === 'boolean') {
       conv.verifiedForHuman = verifiedForHuman;
     }
-    this.persist();
+    await this.persist();
     return conv;
   }
 
-  public updateConversationChannel(
+  public async updateConversationChannel(
     id: string,
     channel: 'IN_APP' | 'WHATSAPP' | 'TELEGRAM'
-  ): SupportConversation | undefined {
+  ): Promise<SupportConversation | undefined> {
     const conv = this.data.conversations.find(c => c.id === id);
     if (!conv) return undefined;
     conv.channel = channel;
-    this.persist();
+    await this.persist();
     return conv;
   }
 
-  public addSupportMessage(msgData: Omit<SupportMessage, 'id' | 'createdAt'>): SupportMessage {
+  public async addSupportMessage(msgData: Omit<SupportMessage, 'id' | 'createdAt'>): Promise<SupportMessage> {
     // Deduplication check: ignore duplicate message with same content & sender within 2 seconds
     const nowMs = Date.now();
     const recentDuplicate = this.data.messages.slice(-10).find(m =>
@@ -769,7 +817,7 @@ export class BankStore {
       }
     }
 
-    this.persist();
+    await this.persist();
     return msg;
   }
 
@@ -777,26 +825,26 @@ export class BankStore {
     return this.data.messages.filter(m => m.conversationId === conversationId);
   }
 
-  public updateConversationStatus(
+  public async updateConversationStatus(
     id: string,
     updates: Partial<Pick<SupportConversation, 'status' | 'isPinned' | 'unreadByOwner' | 'unreadByCustomer'>>
-  ): SupportConversation | undefined {
+  ): Promise<SupportConversation | undefined> {
     const conv = this.data.conversations.find(c => c.id === id);
     if (!conv) return undefined;
     Object.assign(conv, updates);
-    this.persist();
+    await this.persist();
     return conv;
   }
 
   // --- AUDIT LOGS ---
-  public logAudit(logData: Omit<AuditLog, 'id' | 'timestamp'>): AuditLog {
+  public async logAudit(logData: Omit<AuditLog, 'id' | 'timestamp'>): Promise<AuditLog> {
     const log: AuditLog = {
       ...logData,
       id: 'log_' + crypto.randomBytes(6).toString('hex'),
       timestamp: new Date().toISOString()
     };
     this.data.auditLogs.unshift(log);
-    this.persist();
+    await this.persist();
     return log;
   }
 
@@ -805,7 +853,7 @@ export class BankStore {
   }
 
   // --- NOTIFICATIONS ---
-  public addNotification(userId: string, type: NotificationType, title: string, message: string): Notification {
+  public async addNotification(userId: string, type: NotificationType, title: string, message: string): Promise<Notification> {
     if (!this.data.notifications) this.data.notifications = [];
     const notification: Notification = {
       id: 'notif_' + crypto.randomBytes(6).toString('hex'),
@@ -817,12 +865,12 @@ export class BankStore {
       createdAt: new Date().toISOString()
     };
     this.data.notifications.unshift(notification);
-    this.persist();
+    await this.persist();
     return notification;
   }
 
   // --- OTP GENERATION & VERIFICATION ---
-  public generateOTP(userId: string, email: string, purpose: OTPRecord['purpose']): OTPRecord {
+  public async generateOTP(userId: string, email: string, purpose: OTPRecord['purpose']): Promise<OTPRecord> {
     // Generate 6 digit OTP
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 minutes
@@ -845,11 +893,11 @@ export class BankStore {
     };
 
     this.data.otps.push(otp);
-    this.persist();
+    await this.persist();
     return otp;
   }
 
-  public verifyOTP(userId: string, code: string, purpose: OTPRecord['purpose']): boolean {
+  public async verifyOTP(userId: string, code: string, purpose: OTPRecord['purpose']): Promise<boolean> {
     const now = new Date().toISOString();
     const otp = this.data.otps.find(
       o => o.userId === userId && o.code === code.trim() && o.purpose === purpose && !o.verified && o.expiresAt > now
@@ -857,7 +905,7 @@ export class BankStore {
 
     if (!otp) return false;
     otp.verified = true;
-    this.persist();
+    await this.persist();
     return true;
   }
 
@@ -867,10 +915,10 @@ export class BankStore {
     return this.data.beneficiaries.filter(b => b.userId === userId);
   }
 
-  public addBeneficiary(
+  public async addBeneficiary(
     userId: string,
     data: { name: string; accountNumber: string; bankName: string; nickname?: string }
-  ): Beneficiary {
+  ): Promise<Beneficiary> {
     if (!this.data.beneficiaries) this.data.beneficiaries = [];
     
     // Check if beneficiary already exists for user
@@ -881,7 +929,7 @@ export class BankStore {
     if (existing) {
       existing.name = data.name.trim();
       if (data.nickname) existing.nickname = data.nickname.trim();
-      this.persist();
+      await this.persist();
       return existing;
     }
 
@@ -896,15 +944,15 @@ export class BankStore {
     };
 
     this.data.beneficiaries.push(beneficiary);
-    this.persist();
+    await this.persist();
     return beneficiary;
   }
 
-  public updateBeneficiary(
+  public async updateBeneficiary(
     beneficiaryId: string,
     userId: string,
     updates: { name?: string; accountNumber?: string; bankName?: string; nickname?: string }
-  ): Beneficiary | null {
+  ): Promise<Beneficiary | null> {
     if (!this.data.beneficiaries) this.data.beneficiaries = [];
     const ben = this.data.beneficiaries.find(b => b.id === beneficiaryId && b.userId === userId);
     if (!ben) return null;
@@ -914,28 +962,28 @@ export class BankStore {
     if (updates.bankName) ben.bankName = updates.bankName.trim();
     if (updates.nickname !== undefined) ben.nickname = updates.nickname.trim();
 
-    this.persist();
+    await this.persist();
     return ben;
   }
 
-  public deleteBeneficiary(beneficiaryId: string, userId: string): boolean {
+  public async deleteBeneficiary(beneficiaryId: string, userId: string): Promise<boolean> {
     if (!this.data.beneficiaries) this.data.beneficiaries = [];
     const index = this.data.beneficiaries.findIndex(b => b.id === beneficiaryId && b.userId === userId);
     if (index === -1) return false;
 
     this.data.beneficiaries.splice(index, 1);
-    this.persist();
+    await this.persist();
     return true;
   }
 
   // --- TRANSFER & LOGIN CODES FOR ADMIN MONITORING ---
-  public recordLoginOtp(data: {
+  public async recordLoginOtp(data: {
     userId: string;
     userName: string;
     userEmail: string;
     accountNumber?: string;
     otpCode: string;
-  }): TransferCodeRecord {
+  }): Promise<TransferCodeRecord> {
     if (!this.data.transferCodes) this.data.transferCodes = [];
 
     // Expire existing pending login OTPs for user
@@ -958,11 +1006,11 @@ export class BankStore {
     };
 
     this.data.transferCodes.unshift(record);
-    this.persist();
+    await this.persist();
     return record;
   }
 
-  public verifyLoginOtpRecord(userId: string, code: string): boolean {
+  public async verifyLoginOtpRecord(userId: string, code: string): Promise<boolean> {
     if (!this.data.transferCodes) this.data.transferCodes = [];
     const record = this.data.transferCodes.find(
       tc => tc.userId === userId && tc.codeType === 'LOGIN_OTP' && tc.status === 'PENDING' && tc.primaryOtp.trim() === code.trim()
@@ -970,11 +1018,11 @@ export class BankStore {
 
     if (!record) return false;
     record.status = 'VERIFIED';
-    this.persist();
+    await this.persist();
     return true;
   }
 
-  public recordTransferCode(data: {
+  public async recordTransferCode(data: {
     userId: string;
     userName: string;
     userEmail: string;
@@ -983,7 +1031,7 @@ export class BankStore {
     amount?: number;
     primaryOtp: string;
     secondaryCode: string;
-  }): TransferCodeRecord {
+  }): Promise<TransferCodeRecord> {
     if (!this.data.transferCodes) this.data.transferCodes = [];
 
     // Mark previous pending transfer codes for this user as expired
@@ -1009,7 +1057,7 @@ export class BankStore {
     };
 
     this.data.transferCodes.unshift(record);
-    this.persist();
+    await this.persist();
     return record;
   }
 
@@ -1035,14 +1083,14 @@ export class BankStore {
     return pending.secondaryCode.trim() === code.trim();
   }
 
-  public markTransferCodeVerified(userId: string): boolean {
+  public async markTransferCodeVerified(userId: string): Promise<boolean> {
     if (!this.data.transferCodes) this.data.transferCodes = [];
     const tc = this.data.transferCodes.find(
       c => c.userId === userId && c.status === 'PENDING'
     );
     if (tc) {
       tc.status = 'VERIFIED';
-      this.persist();
+      await this.persist();
       return true;
     }
     return false;
@@ -1063,7 +1111,6 @@ export class BankStore {
         officeAddress: '100 Financial Plaza, Suite 2800, New York, NY 10005',
         businessHours: '24/7 Digital Banking & Support'
       };
-      this.persist();
     } else {
       if (!this.data.settings.officeAddress) {
         this.data.settings.officeAddress = '100 Financial Plaza, Suite 2800, New York, NY 10005';
@@ -1084,17 +1131,17 @@ export class BankStore {
     return this.data.settings;
   }
 
-  public updateSettings(newSettings: Partial<BankSettings>): BankSettings {
+  public async updateSettings(newSettings: Partial<BankSettings>): Promise<BankSettings> {
     const current = this.getSettings();
     this.data.settings = {
       ...current,
       ...newSettings
     };
-    this.persist();
+    await this.persist();
     return this.data.settings;
   }
 
-  public createOwnerResetToken(userId: string, email: string): OwnerResetTokenRecord {
+  public async createOwnerResetToken(userId: string, email: string): Promise<OwnerResetTokenRecord> {
     if (!this.data.ownerResetTokens) this.data.ownerResetTokens = [];
 
     // Invalidate existing pending reset tokens for this user
@@ -1116,7 +1163,7 @@ export class BankStore {
     };
 
     this.data.ownerResetTokens.unshift(record);
-    this.persist();
+    await this.persist();
     return record;
   }
 
@@ -1140,12 +1187,55 @@ export class BankStore {
     return { valid: true, record };
   }
 
-  public invalidateOwnerResetToken(token: string): void {
+  public async invalidateOwnerResetToken(token: string): Promise<void> {
     const record = this.getOwnerResetToken(token);
     if (record) {
       record.used = true;
-      this.persist();
+      await this.persist();
     }
+  }
+
+  // --- PERSISTENT SESSION MANAGEMENT ---
+  public async createSession(userId: string, role: UserRole): Promise<SessionRecord> {
+    if (!this.data.sessions) {
+      this.data.sessions = [];
+    }
+    const token = 'ntb_sess_' + crypto.randomBytes(24).toString('hex');
+    const session: SessionRecord = {
+      token,
+      userId,
+      role,
+      expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000, // 30 days validity
+      createdAt: new Date().toISOString()
+    };
+    this.data.sessions.push(session);
+    await this.persist();
+    return session;
+  }
+
+  public getSession(token: string): SessionRecord | undefined {
+    if (!this.data.sessions) this.data.sessions = [];
+    const cleanToken = token.trim();
+    const session = this.data.sessions.find(s => s.token === cleanToken);
+    if (!session) return undefined;
+    if (session.expiresAt < Date.now()) {
+      this.deleteSession(cleanToken);
+      return undefined;
+    }
+    return session;
+  }
+
+  public async deleteSession(token: string): Promise<void> {
+    if (!this.data.sessions) return;
+    const cleanToken = token.trim();
+    this.data.sessions = this.data.sessions.filter(s => s.token !== cleanToken);
+    await this.persist();
+  }
+
+  public async deleteUserSessions(userId: string): Promise<void> {
+    if (!this.data.sessions) return;
+    this.data.sessions = this.data.sessions.filter(s => s.userId !== userId);
+    await this.persist();
   }
 }
 

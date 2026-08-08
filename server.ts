@@ -6,7 +6,7 @@ import { GoogleGenAI } from '@google/genai';
 import { store } from './src/server/store.js';
 import { sendPasswordResetEmail } from './src/server/email.js';
 import { generateHistoricalTransactions } from './src/server/generator.js';
-import { UserRole, AccountStatus } from './src/types.js';
+import { User, UserRole, AccountStatus } from './src/types.js';
 
 const app = express();
 const PORT = 3000;
@@ -34,47 +34,84 @@ function getGenAI(): GoogleGenAI | null {
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Simple in-memory session tokens map (token -> userId)
-const sessions = new Map<string, { userId: string; role: UserRole; expiresAt: number }>();
+// Global store readiness middleware
+app.use(async (req, res, next) => {
+  if (store.readyPromise) {
+    try {
+      await store.readyPromise;
+    } catch (_) {}
+  }
+  next();
+});
 
-function createSession(userId: string, role: UserRole): string {
-  const token = 'ntb_sess_' + Math.random().toString(36).substring(2) + Date.now().toString(36);
-  // Session valid for 24 hours
-  sessions.set(token, { userId, role, expiresAt: Date.now() + 24 * 60 * 60 * 1000 });
-  return token;
+// Persistent session management via BankStore (PostgreSQL)
+function setSessionCookie(res: Response, token: string) {
+  res.setHeader('Set-Cookie', `ntb_session_token=${token}; Path=/; Max-Age=2592000; SameSite=Lax`);
 }
 
-function getSessionUser(req: Request) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) return null;
-  const token = authHeader.replace('Bearer ', '').trim();
-  const session = sessions.get(token);
-  if (!session || session.expiresAt < Date.now()) {
-    if (session) sessions.delete(token);
-    return null;
+async function createSession(userId: string, role: UserRole, res?: Response): Promise<string> {
+  const session = await store.createSession(userId, role);
+  if (res) {
+    setSessionCookie(res, session.token);
   }
+  return session.token;
+}
+
+async function getSessionUser(req: Request): Promise<User | null> {
+  try {
+    if (store.readyPromise) {
+      await store.readyPromise;
+    }
+  } catch (_) {}
+
+  let token: string | null = null;
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.replace('Bearer ', '').trim();
+  } else if (req.headers.cookie) {
+    const match = req.headers.cookie.match(/ntb_session_token=([^;]+)/);
+    if (match) {
+      token = match[1].trim();
+    }
+  } else if (typeof req.query.token === 'string') {
+    token = req.query.token.trim();
+  }
+
+  if (!token) return null;
+
+  const session = store.getSession(token);
+  if (!session) return null;
+
   const user = store.findUserById(session.userId);
   return user || null;
 }
 
 // Middleware: Require Auth
-function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const user = getSessionUser(req);
-  if (!user) {
+async function requireAuth(req: Request, res: Response, next: NextFunction) {
+  try {
+    const user = await getSessionUser(req);
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized session' });
+    }
+    (req as any).user = user;
+    next();
+  } catch (err) {
     return res.status(401).json({ error: 'Unauthorized session' });
   }
-  (req as any).user = user;
-  next();
 }
 
 // Middleware: Require Owner
-function requireOwner(req: Request, res: Response, next: NextFunction) {
-  const user = getSessionUser(req);
-  if (!user || user.role !== 'OWNER') {
+async function requireOwner(req: Request, res: Response, next: NextFunction) {
+  try {
+    const user = await getSessionUser(req);
+    if (!user || user.role !== 'OWNER') {
+      return res.status(403).json({ error: 'Access denied: Owner privilege required' });
+    }
+    (req as any).user = user;
+    next();
+  } catch (err) {
     return res.status(403).json({ error: 'Access denied: Owner privilege required' });
   }
-  (req as any).user = user;
-  next();
 }
 
 // Client IP Helper
@@ -109,7 +146,7 @@ app.get('/api/system/status', (req, res) => {
 });
 
 // Phase 1: Owner Setup (First launch only)
-app.post('/api/auth/owner-setup', (req, res) => {
+app.post('/api/auth/owner-setup', async (req, res) => {
   if (store.hasOwner()) {
     return res.status(400).json({ error: 'Owner account has already been set up. Setup is disabled.' });
   }
@@ -128,15 +165,17 @@ app.post('/api/auth/owner-setup', (req, res) => {
     return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
   }
 
-  const owner = store.createUser({
-    email: email.trim().toLowerCase(),
+  const cleanEmail = email.trim().toLowerCase();
+
+  const owner = await store.createUser({
+    email: cleanEmail,
     role: 'OWNER',
     fullName: 'Bank Administrator',
     passwordHash: password, // Simple secure simulation
     emailVerified: true
   });
 
-  store.logAudit({
+  await store.logAudit({
     userId: owner.id,
     userEmail: owner.email,
     action: 'INITIAL_OWNER_SETUP',
@@ -145,7 +184,10 @@ app.post('/api/auth/owner-setup', (req, res) => {
     status: 'SUCCESS'
   });
 
-  const token = createSession(owner.id, 'OWNER');
+  const token = await createSession(owner.id, 'OWNER', res);
+
+  await store.persist();
+
   res.json({
     message: 'Owner account created successfully',
     user: owner,
@@ -154,7 +196,7 @@ app.post('/api/auth/owner-setup', (req, res) => {
 });
 
 // Phase 1: Authentication Login (Owner & Customer)
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   const { loginIdentifier, password, loginType } = req.body;
 
   if (!loginIdentifier || !password) {
@@ -178,7 +220,7 @@ app.post('/api/auth/login', (req, res) => {
   }
 
   if (!user) {
-    store.logAudit({
+    await store.logAudit({
       action: 'LOGIN_FAILED',
       details: `Failed login attempt for identifier: ${loginIdentifier}`,
       ipAddress: getClientIp(req),
@@ -193,7 +235,7 @@ app.post('/api/auth/login', (req, res) => {
 
   const storedPassword = user.passwordHash || (user as any).password;
   if (storedPassword !== password) {
-    store.logAudit({
+    await store.logAudit({
       userId: user.id,
       userEmail: user.email,
       action: 'LOGIN_FAILED',
@@ -207,8 +249,8 @@ app.post('/api/auth/login', (req, res) => {
   // If Customer, require 2FA Login OTP verification
   if (user.role === 'CUSTOMER') {
     const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
-    const account = store.getAccountByUserId(user.id);
-    store.recordLoginOtp({
+    const account = await store.getAccountByUserId(user.id);
+    await store.recordLoginOtp({
       userId: user.id,
       userName: user.fullName,
       userEmail: user.email,
@@ -216,7 +258,7 @@ app.post('/api/auth/login', (req, res) => {
       otpCode
     });
 
-    store.logAudit({
+    await store.logAudit({
       userId: user.id,
       userEmail: user.email,
       action: 'LOGIN_OTP_GENERATED',
@@ -234,12 +276,12 @@ app.post('/api/auth/login', (req, res) => {
 
   // Update last login for OWNER
   const ip = getClientIp(req);
-  store.updateUser(user.id, {
+  await store.updateUser(user.id, {
     lastLoginAt: new Date().toISOString(),
     lastLoginIp: ip
   });
 
-  store.logAudit({
+  await store.logAudit({
     userId: user.id,
     userEmail: user.email,
     action: 'LOGIN_SUCCESS',
@@ -248,8 +290,10 @@ app.post('/api/auth/login', (req, res) => {
     status: 'SUCCESS'
   });
 
-  const token = createSession(user.id, user.role);
-  const account = store.getAccountByUserId(user.id);
+  const token = await createSession(user.id, user.role, res);
+  const account = await store.getAccountByUserId(user.id);
+
+  await store.persist();
 
   res.json({
     user,
@@ -259,7 +303,7 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 // Verify Customer Login OTP Endpoint
-app.post('/api/auth/verify-login-otp', (req, res) => {
+app.post('/api/auth/verify-login-otp', async (req, res) => {
   const { userId, otpCode } = req.body;
 
   if (!userId || !otpCode) {
@@ -271,9 +315,9 @@ app.post('/api/auth/verify-login-otp', (req, res) => {
     return res.status(404).json({ error: 'User not found.' });
   }
 
-  const isValid = store.verifyLoginOtpRecord(userId, otpCode);
+  const isValid = await store.verifyLoginOtpRecord(userId, otpCode);
   if (!isValid) {
-    store.logAudit({
+    await store.logAudit({
       userId: user.id,
       userEmail: user.email,
       action: 'LOGIN_OTP_FAILED',
@@ -285,12 +329,12 @@ app.post('/api/auth/verify-login-otp', (req, res) => {
   }
 
   const ip = getClientIp(req);
-  store.updateUser(user.id, {
+  await store.updateUser(user.id, {
     lastLoginAt: new Date().toISOString(),
     lastLoginIp: ip
   });
 
-  store.logAudit({
+  await store.logAudit({
     userId: user.id,
     userEmail: user.email,
     action: 'LOGIN_SUCCESS',
@@ -299,15 +343,15 @@ app.post('/api/auth/verify-login-otp', (req, res) => {
     status: 'SUCCESS'
   });
 
-  store.createNotification({
+  await store.createNotification({
     userId: user.id,
     title: 'New Login Verified',
     message: `A new verified login to your account was detected from IP ${ip} on ${new Date().toLocaleString()}.`,
     type: 'LOGIN_DETECTED'
   });
 
-  const token = createSession(user.id, user.role);
-  const account = store.getAccountByUserId(user.id);
+  const token = await createSession(user.id, user.role, res);
+  const account = await store.getAccountByUserId(user.id);
 
   res.json({
     user,
@@ -317,19 +361,29 @@ app.post('/api/auth/verify-login-otp', (req, res) => {
 });
 
 // Logout
-app.post('/api/auth/logout', (req, res) => {
+app.post('/api/auth/logout', async (req, res) => {
+  let token: string | null = null;
   const authHeader = req.headers.authorization;
-  if (authHeader) {
-    const token = authHeader.replace('Bearer ', '').trim();
-    sessions.delete(token);
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.replace('Bearer ', '').trim();
+  } else if (req.headers.cookie) {
+    const match = req.headers.cookie.match(/ntb_session_token=([^;]+)/);
+    if (match) {
+      token = match[1].trim();
+    }
   }
+
+  if (token) {
+    await store.deleteSession(token);
+  }
+  res.setHeader('Set-Cookie', 'ntb_session_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT');
   res.json({ success: true });
 });
 
 // Get Current User Info
-app.get('/api/auth/me', requireAuth, (req, res) => {
+app.get('/api/auth/me', requireAuth, async (req, res) => {
   const user = (req as any).user;
-  const account = store.getAccountByUserId(user.id);
+  const account = await store.getAccountByUserId(user.id);
   res.json({ user, account });
 });
 
@@ -342,10 +396,10 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     return res.json({ message: 'If an account exists with that email, a password reset link has been dispatched.' });
   }
 
-  const otp = store.generateOTP(user.id, user.email, 'PASSWORD_RESET');
+  const otp = await store.generateOTP(user.id, user.email, 'PASSWORD_RESET');
   await sendPasswordResetEmail(user.email, undefined, user.fullName || 'Customer');
 
-  store.logAudit({
+  await store.logAudit({
     userId: user.id,
     userEmail: user.email,
     action: 'PASSWORD_RESET_REQUEST',
@@ -360,18 +414,18 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   });
 });
 
-app.post('/api/auth/reset-password', (req, res) => {
+app.post('/api/auth/reset-password', async (req, res) => {
   const { email, otpCode, newPassword } = req.body;
   const user = store.findUserByEmail(email);
   if (!user) return res.status(400).json({ error: 'User not found.' });
 
-  const verified = store.verifyOTP(user.id, otpCode, 'PASSWORD_RESET');
+  const verified = await store.verifyOTP(user.id, otpCode, 'PASSWORD_RESET');
   if (!verified) {
     return res.status(400).json({ error: 'Invalid or expired OTP code.' });
   }
 
-  store.updateUser(user.id, { passwordHash: newPassword });
-  store.logAudit({
+  await store.updateUser(user.id, { passwordHash: newPassword });
+  await store.logAudit({
     userId: user.id,
     userEmail: user.email,
     action: 'PASSWORD_RESET_SUCCESS',
@@ -380,7 +434,7 @@ app.post('/api/auth/reset-password', (req, res) => {
     status: 'SUCCESS'
   });
 
-  store.createNotification({
+  await store.createNotification({
     userId: user.id,
     title: 'Password Changed',
     message: 'Your account password was successfully updated.',
@@ -407,7 +461,7 @@ app.post('/api/auth/owner/forgot-password', async (req, res) => {
     });
   }
 
-  const tokenRecord = store.createOwnerResetToken(user.id, user.email);
+  const tokenRecord = await store.createOwnerResetToken(user.id, user.email);
   await store.persist();
 
   const host = req.get('host') || 'localhost:3000';
@@ -426,7 +480,7 @@ app.post('/api/auth/owner/forgot-password', async (req, res) => {
   }
 
   if (emailDispatched) {
-    store.logAudit({
+    await store.logAudit({
       userId: user.id,
       userEmail: user.email,
       action: 'OWNER_PASSWORD_RESET_REQUESTED',
@@ -435,7 +489,7 @@ app.post('/api/auth/owner/forgot-password', async (req, res) => {
       status: 'SUCCESS'
     });
 
-    store.createNotification({
+    await store.createNotification({
       userId: user.id,
       title: 'Admin Password Reset Link Sent',
       message: `A password reset link was dispatched to your email (${user.email}) via Firebase Authentication.`,
@@ -450,7 +504,7 @@ app.post('/api/auth/owner/forgot-password', async (req, res) => {
       token: tokenRecord.token
     });
   } else {
-    store.logAudit({
+    await store.logAudit({
       userId: user.id,
       userEmail: user.email,
       action: 'OWNER_PASSWORD_RESET_TOKEN_GENERATED',
@@ -459,7 +513,7 @@ app.post('/api/auth/owner/forgot-password', async (req, res) => {
       status: 'SUCCESS'
     });
 
-    store.createNotification({
+    await store.createNotification({
       userId: user.id,
       title: 'Admin Password Reset Link Generated',
       message: `A password reset token was generated for your administrator account (${user.email}).`,
@@ -557,20 +611,20 @@ app.post('/api/auth/owner/reset-password', async (req, res) => {
 // ==================== PHASE 2: OWNER DASHBOARD API ====================
 
 // Get All Customers (Owner Only)
-app.get('/api/admin/customers', requireOwner, (req, res) => {
+app.get('/api/admin/customers', requireOwner, async (req, res) => {
   const customers = store.getAllCustomers();
-  const enriched = customers.map(c => {
-    const account = store.getAccountByUserId(c.id);
+  const enriched = await Promise.all(customers.map(async c => {
+    const account = await store.getAccountByUserId(c.id);
     return {
       ...c,
       account
     };
-  });
+  }));
   res.json(enriched);
 });
 
 // Create Customer (Owner Only)
-app.post('/api/admin/customers', requireOwner, (req, res) => {
+app.post('/api/admin/customers', requireOwner, async (req, res) => {
   const { fullName, email, password, phoneNumber, dateOfBirth, address, accountType, initialBalance, accountCreatedAt, generateHistory } = req.body;
 
   if (!fullName || !email || !accountType) {
@@ -588,7 +642,7 @@ app.post('/api/admin/customers', requireOwner, (req, res) => {
   const assignedPassword = password.trim();
   const createdAtDate = accountCreatedAt ? new Date(accountCreatedAt).toISOString() : new Date().toISOString();
 
-  const customer = store.createUser({
+  const customer = await store.createUser({
     email: email.trim().toLowerCase(),
     role: 'CUSTOMER',
     fullName: fullName.trim(),
@@ -602,7 +656,7 @@ app.post('/api/admin/customers', requireOwner, (req, res) => {
   });
 
   const deposit = parseFloat(initialBalance) || 0;
-  const account = store.createAccount(customer.id, accountType || 'Checking', deposit, createdAtDate);
+  const account = await store.createAccount(customer.id, accountType || 'Checking', deposit, createdAtDate);
 
   // Generate historical transactions covering from creation date to present if requested
   if (generateHistory !== false) {
@@ -613,9 +667,9 @@ app.post('/api/admin/customers', requireOwner, (req, res) => {
       createdAtDate,
       deposit
     );
-    store.setTransactionsForUser(customer.id, historicalTxs);
+    await store.setTransactionsForUser(customer.id, historicalTxs);
   } else if (deposit > 0) {
-    store.createTransaction({
+    await store.createTransaction({
       recipientUserId: customer.id,
       recipientName: customer.fullName,
       recipientAccountNumber: account.accountNumber,
@@ -626,10 +680,10 @@ app.post('/api/admin/customers', requireOwner, (req, res) => {
       type: 'Initial Deposit',
       status: 'Completed'
     });
-    store.recalculateRunningBalancesForUser(customer.id);
+    await store.recalculateRunningBalancesForUser(customer.id);
   }
 
-  store.logAudit({
+  await store.logAudit({
     userId: (req as any).user.id,
     userEmail: (req as any).user.email,
     action: 'CREATE_CUSTOMER',
@@ -639,19 +693,19 @@ app.post('/api/admin/customers', requireOwner, (req, res) => {
   });
 
   // Automatically start/get support conversation for customer
-  store.getOrCreateConversation(customer);
+  await store.getOrCreateConversation(customer);
 
   res.json({
     message: 'Customer account created successfully',
     customer,
-    account: store.getAccountByUserId(customer.id),
+    account: await store.getAccountByUserId(customer.id),
     assignedPassword,
     loginUrl: '/login'
   });
 });
 
 // Update Customer KYC Status (Owner Only)
-app.post('/api/admin/customers/:id/kyc-status', requireOwner, (req, res) => {
+app.post('/api/admin/customers/:id/kyc-status', requireOwner, async (req, res) => {
   const { kycStatus } = req.body;
   if (!['Verified', 'Verification Required', 'Suspended'].includes(kycStatus)) {
     return res.status(400).json({ error: 'Invalid KYC Status value.' });
@@ -660,16 +714,16 @@ app.post('/api/admin/customers/:id/kyc-status', requireOwner, (req, res) => {
   const customer = store.findUserById(req.params.id);
   if (!customer) return res.status(404).json({ error: 'Customer not found' });
 
-  store.updateAccountKycStatus(customer.id, kycStatus);
+  await store.updateAccountKycStatus(customer.id, kycStatus);
 
   // Notify customer
   let msg = `Your account KYC status has been set to: ${kycStatus}`;
   if (kycStatus === 'Verification Required' || kycStatus === 'Suspended') {
     msg = `Your account has been temporarily restricted because your KYC verification is incomplete or suspended. Please contact Customer Support to complete your identity verification.`;
   }
-  store.addNotification(customer.id, 'SYSTEM_ALERT', 'KYC Status Update', msg);
+  await store.addNotification(customer.id, 'SYSTEM_ALERT', 'KYC Status Update', msg);
 
-  store.logAudit({
+  await store.logAudit({
     userId: (req as any).user.id,
     userEmail: (req as any).user.email,
     action: 'UPDATE_KYC_STATUS',
@@ -678,21 +732,21 @@ app.post('/api/admin/customers/:id/kyc-status', requireOwner, (req, res) => {
     status: 'SUCCESS'
   });
 
-  res.json({ message: 'KYC status updated successfully', customer: store.findUserById(customer.id), account: store.getAccountByUserId(customer.id) });
+  res.json({ message: 'KYC status updated successfully', customer: store.findUserById(customer.id), account: await store.getAccountByUserId(customer.id) });
 });
 
 // Reset Customer Password by Bank Owner
-app.post('/api/admin/customers/:id/reset-password', requireOwner, (req, res) => {
+app.post('/api/admin/customers/:id/reset-password', requireOwner, async (req, res) => {
   const { newPassword } = req.body;
   const customer = store.findUserById(req.params.id);
   if (!customer) return res.status(404).json({ error: 'Customer not found' });
 
   const resetPassword = newPassword && newPassword.trim() ? newPassword.trim() : ('Nova' + Math.floor(100000 + Math.random() * 900000));
-  store.updateUser(customer.id, { passwordHash: resetPassword });
+  await store.updateUser(customer.id, { passwordHash: resetPassword });
 
-  store.addNotification(customer.id, 'PASSWORD_CHANGED', 'Password Reset by Bank Admin', `Your account login password has been updated by bank security. New credentials active immediately.`);
+  await store.addNotification(customer.id, 'PASSWORD_CHANGED', 'Password Reset by Bank Admin', `Your account login password has been updated by bank security. New credentials active immediately.`);
 
-  store.logAudit({
+  await store.logAudit({
     userId: (req as any).user.id,
     userEmail: (req as any).user.email,
     action: 'ADMIN_RESET_PASSWORD',
@@ -705,18 +759,18 @@ app.post('/api/admin/customers/:id/reset-password', requireOwner, (req, res) => 
 });
 
 // Send/Generate Customer Verification Code (OTP & Passcode)
-app.post('/api/admin/customers/:id/send-verification-code', requireOwner, (req, res) => {
+app.post('/api/admin/customers/:id/send-verification-code', requireOwner, async (req, res) => {
   const customer = store.findUserById(req.params.id);
   if (!customer) return res.status(404).json({ error: 'Customer not found' });
 
-  const account = store.getAccountByUserId(customer.id);
+  const account = await store.getAccountByUserId(customer.id);
 
   const primaryOtp = Math.floor(100000 + Math.random() * 900000).toString();
   const secondaryCode = 'COT-' + Math.floor(100000 + Math.random() * 900000).toString();
 
-  store.addNotification(customer.id, 'SYSTEM_ALERT', 'Security Verification Code', `Your security verification OTP code is: ${primaryOtp}. Transfer Code: ${secondaryCode}`);
+  await store.addNotification(customer.id, 'SYSTEM_ALERT', 'Security Verification Code', `Your security verification OTP code is: ${primaryOtp}. Transfer Code: ${secondaryCode}`);
 
-  store.logAudit({
+  await store.logAudit({
     userId: (req as any).user.id,
     userEmail: (req as any).user.email,
     action: 'GENERATE_VERIFICATION_CODE',
@@ -736,12 +790,12 @@ app.post('/api/admin/customers/:id/send-verification-code', requireOwner, (req, 
 });
 
 // Regenerate Customer Transaction History (Owner Only)
-app.post('/api/admin/customers/:id/regenerate-history', requireOwner, (req, res) => {
+app.post('/api/admin/customers/:id/regenerate-history', requireOwner, async (req, res) => {
   const customerId = req.params.id;
   const customer = store.findUserById(customerId);
   if (!customer) return res.status(404).json({ error: 'Customer not found.' });
 
-  const account = store.getAccountByUserId(customerId);
+  const account = await store.getAccountByUserId(customerId);
   if (!account) return res.status(404).json({ error: 'Customer account not found.' });
 
   const { startDate, targetBalance } = req.body;
@@ -759,9 +813,9 @@ app.post('/api/admin/customers/:id/regenerate-history', requireOwner, (req, res)
     balanceVal
   );
 
-  store.setTransactionsForUser(customer.id, txs);
+  await store.setTransactionsForUser(customer.id, txs);
 
-  store.logAudit({
+  await store.logAudit({
     userId: (req as any).user.id,
     userEmail: (req as any).user.email,
     action: 'REGENERATE_HISTORY',
@@ -772,18 +826,18 @@ app.post('/api/admin/customers/:id/regenerate-history', requireOwner, (req, res)
 
   res.json({
     message: 'Historical transaction history regenerated successfully',
-    account: store.getAccountByUserId(customer.id),
+    account: await store.getAccountByUserId(customer.id),
     transactions: store.getTransactionsForUser(customer.id)
   });
 });
 
 // Add Single Transaction Entry for Customer (Owner Only)
-app.post('/api/admin/customers/:id/transactions', requireOwner, (req, res) => {
+app.post('/api/admin/customers/:id/transactions', requireOwner, async (req, res) => {
   const customerId = req.params.id;
   const customer = store.findUserById(customerId);
   if (!customer) return res.status(404).json({ error: 'Customer not found.' });
 
-  const account = store.getAccountByUserId(customerId);
+  const account = await store.getAccountByUserId(customerId);
   if (!account) return res.status(404).json({ error: 'Customer account not found.' });
 
   const { type, amount, description, bankName, counterpartyName, createdAt, reference } = req.body;
@@ -820,18 +874,18 @@ app.post('/api/admin/customers/:id/transactions', requireOwner, (req, res) => {
     txData.recipientAccountNumber = '998' + Math.floor(100000 + Math.random() * 900000).toString();
   }
 
-  const newTx = store.addTransactionForUser(customer.id, txData);
+  const newTx = await store.addTransactionForUser(customer.id, txData);
 
   res.json({
     message: 'Transaction added successfully',
     transaction: newTx,
-    account: store.getAccountByUserId(customer.id),
+    account: await store.getAccountByUserId(customer.id),
     transactions: store.getTransactionsForUser(customer.id)
   });
 });
 
 // Edit Transaction Entry (Owner Only)
-app.put('/api/admin/transactions/:txId', requireOwner, (req, res) => {
+app.put('/api/admin/transactions/:txId', requireOwner, async (req, res) => {
   const { txId } = req.params;
   const { description, amount, createdAt, counterpartyName, bankName, type } = req.body;
 
@@ -851,7 +905,7 @@ app.put('/api/admin/transactions/:txId', requireOwner, (req, res) => {
     updates.type = isCredit ? 'Transfer Received' : 'Transfer Sent';
   }
 
-  const updated = store.updateTransaction(txId, updates);
+  const updated = await store.updateTransaction(txId, updates);
   if (!updated) return res.status(404).json({ error: 'Transaction not found.' });
 
   res.json({
@@ -861,16 +915,16 @@ app.put('/api/admin/transactions/:txId', requireOwner, (req, res) => {
 });
 
 // Delete Transaction Entry (Owner Only)
-app.delete('/api/admin/transactions/:txId', requireOwner, (req, res) => {
+app.delete('/api/admin/transactions/:txId', requireOwner, async (req, res) => {
   const { txId } = req.params;
-  const success = store.deleteTransaction(txId);
+  const success = await store.deleteTransaction(txId);
   if (!success) return res.status(404).json({ error: 'Transaction not found.' });
 
   res.json({ message: 'Transaction deleted successfully.' });
 });
 
 // Update Customer Details (By Admin/Owner)
-app.put('/api/admin/customers/:id', requireOwner, (req, res) => {
+app.put('/api/admin/customers/:id', requireOwner, async (req, res) => {
   const customerId = req.params.id;
   const { fullName, email, phoneNumber, address, dateOfBirth, username, profilePicture } = req.body;
 
@@ -883,11 +937,11 @@ app.put('/api/admin/customers/:id', requireOwner, (req, res) => {
   if (username !== undefined) updateFields.username = username;
   if (profilePicture !== undefined) updateFields.profilePicture = profilePicture;
 
-  const updated = store.updateUser(customerId, updateFields);
+  const updated = await store.updateUser(customerId, updateFields);
 
   if (!updated) return res.status(404).json({ error: 'Customer not found' });
 
-  store.logAudit({
+  await store.logAudit({
     userId: (req as any).user.id,
     userEmail: (req as any).user.email,
     action: 'UPDATE_CUSTOMER',
@@ -900,7 +954,7 @@ app.put('/api/admin/customers/:id', requireOwner, (req, res) => {
 });
 
 // Update Customer Own Profile
-app.put('/api/customer/profile', requireAuth, (req, res) => {
+app.put('/api/customer/profile', requireAuth, async (req, res) => {
   const user = (req as any).user;
   const { fullName, phoneNumber, address, dateOfBirth, username, profilePicture } = req.body;
 
@@ -912,10 +966,10 @@ app.put('/api/customer/profile', requireAuth, (req, res) => {
   if (username !== undefined) updateFields.username = username;
   if (profilePicture !== undefined) updateFields.profilePicture = profilePicture;
 
-  const updated = store.updateUser(user.id, updateFields);
+  const updated = await store.updateUser(user.id, updateFields);
   if (!updated) return res.status(404).json({ error: 'User not found' });
 
-  store.logAudit({
+  await store.logAudit({
     userId: user.id,
     userEmail: user.email,
     action: 'UPDATE_PROFILE',
@@ -928,12 +982,12 @@ app.put('/api/customer/profile', requireAuth, (req, res) => {
 });
 
 // Delete Customer Profile Picture
-app.delete('/api/customer/profile/picture', requireAuth, (req, res) => {
+app.delete('/api/customer/profile/picture', requireAuth, async (req, res) => {
   const user = (req as any).user;
-  const updated = store.updateUser(user.id, { profilePicture: '' });
+  const updated = await store.updateUser(user.id, { profilePicture: '' });
   if (!updated) return res.status(404).json({ error: 'User not found' });
 
-  store.logAudit({
+  await store.logAudit({
     userId: user.id,
     userEmail: user.email,
     action: 'REMOVE_PROFILE_PICTURE',
@@ -946,7 +1000,7 @@ app.delete('/api/customer/profile/picture', requireAuth, (req, res) => {
 });
 
 // Get Full Customer Profile Details (for Owner view)
-app.get('/api/admin/customers/:id/details', requireOwner, (req, res) => {
+app.get('/api/admin/customers/:id/details', requireOwner, async (req, res) => {
   const customerId = req.params.id;
   const customer = store.findUserById(customerId);
   if (!customer) return res.status(404).json({ error: 'Customer not found' });
@@ -954,7 +1008,7 @@ app.get('/api/admin/customers/:id/details', requireOwner, (req, res) => {
   const account = store.getAccountByUserId(customerId);
   const transactions = store.getTransactionsForUser(customerId);
   const beneficiaries = store.getBeneficiariesForUser(customerId);
-  const conversation = store.getOrCreateConversation(customer);
+  const conversation = await store.getOrCreateConversation(customer);
   const messages = store.getMessagesForConversation(conversation.id);
   const auditLogs = store.getAuditLogs().filter(l => l.userId === customerId || l.userEmail === customer.email);
 
@@ -970,7 +1024,7 @@ app.get('/api/admin/customers/:id/details', requireOwner, (req, res) => {
 });
 
 // Direct Send Message from Owner to Customer
-app.post('/api/admin/customers/:id/send-message', requireOwner, (req, res) => {
+app.post('/api/admin/customers/:id/send-message', requireOwner, async (req, res) => {
   const customerId = req.params.id;
   const { text, attachments } = req.body;
   const owner = (req as any).user;
@@ -982,9 +1036,9 @@ app.post('/api/admin/customers/:id/send-message', requireOwner, (req, res) => {
   const customer = store.findUserById(customerId);
   if (!customer) return res.status(404).json({ error: 'Customer not found' });
 
-  const conversation = store.getOrCreateConversation(customer);
+  const conversation = await store.getOrCreateConversation(customer);
 
-  const msg = store.addSupportMessage({
+  const msg = await store.addSupportMessage({
     conversationId: conversation.id,
     senderId: owner.id,
     senderRole: 'OWNER',
@@ -993,7 +1047,7 @@ app.post('/api/admin/customers/:id/send-message', requireOwner, (req, res) => {
     attachments: attachments || []
   });
 
-  store.createNotification({
+  await store.createNotification({
     userId: customerId,
     title: 'New Support Message from Bank Administration',
     message: text.length > 80 ? text.substring(0, 77) + '...' : text,
@@ -1004,12 +1058,12 @@ app.post('/api/admin/customers/:id/send-message', requireOwner, (req, res) => {
 });
 
 // Delete Customer
-app.delete('/api/admin/customers/:id', requireOwner, (req, res) => {
+app.delete('/api/admin/customers/:id', requireOwner, async (req, res) => {
   const customerId = req.params.id;
-  const success = store.deleteUser(customerId);
+  const success = await store.deleteUser(customerId);
   if (!success) return res.status(400).json({ error: 'Failed to delete customer' });
 
-  store.logAudit({
+  await store.logAudit({
     userId: (req as any).user.id,
     userEmail: (req as any).user.email,
     action: 'DELETE_CUSTOMER',
@@ -1022,7 +1076,7 @@ app.delete('/api/admin/customers/:id', requireOwner, (req, res) => {
 });
 
 // Update Account Status (Freeze, Unfreeze, Suspend, Reactivate, Close)
-app.post('/api/admin/customers/:id/status', requireOwner, (req, res) => {
+app.post('/api/admin/customers/:id/status', requireOwner, async (req, res) => {
   const customerId = req.params.id;
   const { status } = req.body as { status: AccountStatus };
 
@@ -1030,21 +1084,21 @@ app.post('/api/admin/customers/:id/status', requireOwner, (req, res) => {
     return res.status(400).json({ error: 'Invalid account status value' });
   }
 
-  const account = store.updateAccountStatus(customerId, status);
+  const account = await store.updateAccountStatus(customerId, status);
   if (!account) return res.status(404).json({ error: 'Customer account not found' });
 
   let notifType: any = 'ACCOUNT_FROZEN';
   if (status === 'Active') notifType = 'ACCOUNT_UNFROZEN';
   if (status === 'Suspended') notifType = 'ACCOUNT_SUSPENDED';
 
-  store.createNotification({
+  await store.createNotification({
     userId: customerId,
     title: `Account Status Updated: ${status}`,
     message: `Your Nova Trust Bank account status has been changed to ${status} by bank administration.`,
     type: notifType
   });
 
-  store.logAudit({
+  await store.logAudit({
     userId: (req as any).user.id,
     userEmail: (req as any).user.email,
     action: 'UPDATE_ACCOUNT_STATUS',
@@ -1057,7 +1111,7 @@ app.post('/api/admin/customers/:id/status', requireOwner, (req, res) => {
 });
 
 // Credit/Debit Customer Balance
-app.post('/api/admin/customers/:id/balance', requireOwner, (req, res) => {
+app.post('/api/admin/customers/:id/balance', requireOwner, async (req, res) => {
   const customerId = req.params.id;
   const { amount, type, description } = req.body;
 
@@ -1068,15 +1122,15 @@ app.post('/api/admin/customers/:id/balance', requireOwner, (req, res) => {
 
   const isCredit = type === 'CREDIT';
   const customer = store.findUserById(customerId);
-  const account = store.getAccountByUserId(customerId);
+  const account = await store.getAccountByUserId(customerId);
 
   if (!customer || !account) return res.status(404).json({ error: 'Customer or account not found' });
 
   try {
-    const result = store.adjustAccountBalance(customerId, numAmount, isCredit);
+    const result = await store.adjustAccountBalance(customerId, numAmount, isCredit);
 
     const txType = isCredit ? 'Credit Adjustment' : 'Debit Adjustment';
-    store.createTransaction({
+    await store.createTransaction({
       recipientUserId: customerId,
       recipientName: customer.fullName,
       recipientAccountNumber: account.accountNumber,
@@ -1088,7 +1142,7 @@ app.post('/api/admin/customers/:id/balance', requireOwner, (req, res) => {
       status: 'Completed'
     });
 
-    store.createNotification({
+    await store.createNotification({
       userId: customerId,
       title: isCredit ? 'Account Credited' : 'Account Debited',
       message: `Your account balance was ${isCredit ? 'credited' : 'debited'} by $${numAmount.toFixed(2)}. ${description ? `Note: ${description}` : ''}`,
@@ -1096,7 +1150,7 @@ app.post('/api/admin/customers/:id/balance', requireOwner, (req, res) => {
       amount: numAmount
     });
 
-    store.logAudit({
+    await store.logAudit({
       userId: (req as any).user.id,
       userEmail: (req as any).user.email,
       action: isCredit ? 'CREDIT_BALANCE' : 'DEBIT_BALANCE',
@@ -1112,22 +1166,22 @@ app.post('/api/admin/customers/:id/balance', requireOwner, (req, res) => {
 });
 
 // Admin Reset Password for Customer
-app.post('/api/admin/customers/:id/reset-password', requireOwner, (req, res) => {
+app.post('/api/admin/customers/:id/reset-password', requireOwner, async (req, res) => {
   const customerId = req.params.id;
   const { newPassword } = req.body || {};
   const passToSet = newPassword && newPassword.trim() ? newPassword.trim() : ('Nova' + Math.floor(1000 + Math.random() * 9000) + '!');
 
-  const updated = store.updateUser(customerId, { passwordHash: passToSet });
+  const updated = await store.updateUser(customerId, { passwordHash: passToSet });
   if (!updated) return res.status(404).json({ error: 'Customer not found' });
 
-  store.createNotification({
+  await store.createNotification({
     userId: customerId,
     title: 'Password Reset by Administration',
     message: `Your account password has been updated by bank administration. Your new active login password is: ${passToSet}`,
     type: 'PASSWORD_CHANGED'
   });
 
-  store.logAudit({
+  await store.logAudit({
     userId: (req as any).user.id,
     userEmail: (req as any).user.email,
     action: 'ADMIN_RESET_PASSWORD',
@@ -1294,10 +1348,10 @@ app.post('/api/transfers/validate-recipient', requireAuth, (req, res) => {
   }
 });
 
-app.post('/api/transfers/request-otp', requireAuth, (req, res) => {
+app.post('/api/transfers/request-otp', requireAuth, async (req, res) => {
   const user = (req as any).user;
   const { recipientName, amount } = req.body || {};
-  const senderAccount = store.getAccountByUserId(user.id);
+  const senderAccount = await store.getAccountByUserId(user.id);
 
   if (user.kycStatus === 'Verification Required' || user.kycStatus === 'Suspended' || senderAccount?.kycStatus === 'Verification Required' || senderAccount?.kycStatus === 'Suspended') {
     return res.status(403).json({ error: 'Your account has been temporarily restricted because your KYC verification is incomplete. Please contact Customer Support to complete your identity verification.' });
@@ -1312,7 +1366,7 @@ app.post('/api/transfers/request-otp', requireAuth, (req, res) => {
   const secondaryCode = Math.floor(100000 + Math.random() * 900000).toString();
 
   // Record transfer codes ONLY in the Bank Owner Portal
-  store.recordTransferCode({
+  await store.recordTransferCode({
     userId: user.id,
     userName: user.fullName,
     userEmail: user.email,
@@ -1323,7 +1377,7 @@ app.post('/api/transfers/request-otp', requireAuth, (req, res) => {
     secondaryCode
   });
 
-  store.logAudit({
+  await store.logAudit({
     userId: user.id,
     userEmail: user.email,
     action: 'TRANSFER_OTP_REQUESTED',
@@ -1385,7 +1439,7 @@ app.get('/api/admin/transfer-codes', requireOwner, (req, res) => {
   res.json(codes);
 });
 
-app.post('/api/transfers/execute', requireAuth, (req, res) => {
+app.post('/api/transfers/execute', requireAuth, async (req, res) => {
   const user = (req as any).user;
   const { recipientAccountNumber, recipientName, bankName, amount, description, otpCode, secondCode, saveAsBeneficiary, beneficiaryNickname } = req.body;
 
@@ -1395,21 +1449,21 @@ app.post('/api/transfers/execute', requireAuth, (req, res) => {
   }
 
   // 1. Verify First OTP against active pending record
-  const isOtpValid = store.verifyFirstTransferOtp(user.id, otpCode);
+  const isOtpValid = await store.verifyFirstTransferOtp(user.id, otpCode);
   if (!isOtpValid) {
     return res.status(400).json({ error: 'Invalid or expired OTP.' });
   }
 
   // 1b. Verify Secondary Code against active pending record
-  const isSecondValid = store.verifySecondTransferOtp(user.id, secondCode);
+  const isSecondValid = await store.verifySecondTransferOtp(user.id, secondCode);
   if (!isSecondValid) {
     return res.status(400).json({ error: 'Invalid or expired OTP.' });
   }
 
-  store.markTransferCodeVerified(user.id);
+  await store.markTransferCodeVerified(user.id);
 
   // 2. Sender account retrieved automatically for logged-in user
-  const senderAccount = store.getAccountByUserId(user.id);
+  const senderAccount = await store.getAccountByUserId(user.id);
 
   if (user.kycStatus === 'Verification Required' || user.kycStatus === 'Suspended' || senderAccount.kycStatus === 'Verification Required' || senderAccount.kycStatus === 'Suspended') {
     return res.status(403).json({ error: 'Your account has been temporarily restricted because your KYC verification is incomplete. Please contact Customer Support to complete your identity verification.' });
@@ -1433,11 +1487,11 @@ app.post('/api/transfers/execute', requireAuth, (req, res) => {
   }
 
   // 4. Debit sender balance
-  store.adjustAccountBalance(user.id, numAmount, false);
+  await store.adjustAccountBalance(user.id, numAmount, false);
 
   // 5. Save as beneficiary if requested
   if (saveAsBeneficiary) {
-    store.addBeneficiary(user.id, {
+    await store.addBeneficiary(user.id, {
       name: recipientName || (recipientUser ? recipientUser.fullName : 'Saved Beneficiary'),
       accountNumber: recipientAccountNumber.trim(),
       bankName: bankName || 'Nova Trust Bank',
@@ -1446,7 +1500,7 @@ app.post('/api/transfers/execute', requireAuth, (req, res) => {
   }
 
   // 6. Create sender transaction record
-  const senderTx = store.createTransaction({
+  const senderTx = await store.createTransaction({
     senderUserId: user.id,
     senderName: user.fullName,
     senderAccountNumber: senderAccount.accountNumber,
@@ -1462,7 +1516,7 @@ app.post('/api/transfers/execute', requireAuth, (req, res) => {
   });
 
   // 7. Notify sender
-  store.createNotification({
+  await store.createNotification({
     userId: user.id,
     title: 'Transfer Sent Successfully',
     message: `You transferred $${numAmount.toFixed(2)} to ${senderTx.recipientName} (${recipientAccountNumber}). Ref: ${senderTx.reference}`,
@@ -1472,9 +1526,9 @@ app.post('/api/transfers/execute', requireAuth, (req, res) => {
 
   // 8. Credit recipient if inside application
   if (recipientUser && recipientAccount) {
-    store.adjustAccountBalance(recipientUser.id, numAmount, true);
+    await store.adjustAccountBalance(recipientUser.id, numAmount, true);
 
-    store.createTransaction({
+    await store.createTransaction({
       senderUserId: user.id,
       senderName: user.fullName,
       senderAccountNumber: senderAccount.accountNumber,
@@ -1489,7 +1543,7 @@ app.post('/api/transfers/execute', requireAuth, (req, res) => {
       status: 'Completed'
     });
 
-    store.createNotification({
+    await store.createNotification({
       userId: recipientUser.id,
       title: 'Money Received',
       message: `You received $${numAmount.toFixed(2)} from ${user.fullName} (${senderAccount.accountNumber}). Ref: ${senderTx.reference}`,
@@ -1498,7 +1552,7 @@ app.post('/api/transfers/execute', requireAuth, (req, res) => {
     });
   }
 
-  store.logAudit({
+  await store.logAudit({
     userId: user.id,
     userEmail: user.email,
     action: 'TRANSFER_COMPLETED',
@@ -1781,7 +1835,7 @@ app.post('/api/support/check-account-status', requireAuth, async (req, res) => {
   if (!conv) return res.status(404).json({ error: 'Conversation not found' });
 
   const currentUser = store.findUserById(user.id);
-  const currentAccount = store.getAccountByUserId(user.id);
+  const currentAccount = await store.getAccountByUserId(user.id);
 
   const matchedName = currentUser && currentUser.fullName.trim().toLowerCase() === fullName.trim().toLowerCase();
   const matchedEmail = currentUser && currentUser.email.trim().toLowerCase() === email.trim().toLowerCase();
@@ -2009,9 +2063,9 @@ app.get('/api/settings', (req, res) => {
   res.json(store.getSettings());
 });
 
-app.put('/api/settings', requireOwner, (req, res) => {
+app.put('/api/settings', requireOwner, async (req, res) => {
   const { whatsappNumber, telegramUsername, telegramLink, supportEmail, supportPhone, hotlinePhone, hotlineGreeting, officeAddress, businessHours, homepageVideoUrl, homepageVideoFilename } = req.body;
-  const updated = store.updateSettings({
+  const updated = await store.updateSettings({
     whatsappNumber,
     telegramUsername,
     telegramLink,
@@ -2026,7 +2080,7 @@ app.put('/api/settings', requireOwner, (req, res) => {
   });
 
   const user = (req as any).user;
-  store.logAudit({
+  await store.logAudit({
     userId: user?.id,
     userEmail: user?.email,
     action: 'UPDATE_BANK_SETTINGS',

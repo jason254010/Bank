@@ -11,5 +11,6 @@
   "otps": [],
   "beneficiaries": [],
   "transferCodes": [],
-  "ownerResetTokens": []
+  "ownerResetTokens": [],
+  "sessions": []
 }

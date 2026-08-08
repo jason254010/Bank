@@ -192,3 +192,12 @@ export interface OwnerResetTokenRecord {
   used: boolean;
   createdAt: string;
 }
+
+export interface SessionRecord {
+  token: string;
+  userId: string;
+  role: UserRole;
+  expiresAt: number;
+  createdAt: string;
+}
+
