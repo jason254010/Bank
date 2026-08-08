@@ -186,12 +186,27 @@ export class BankStore {
         const res = await pgPool.query(`SELECT data FROM bank_store WHERE id = 'main'`);
         if (res.rows.length > 0 && res.rows[0].data) {
           const pgData = res.rows[0].data as DBData;
-          if (pgData && Array.isArray(pgData.users) && pgData.users.length > 0) {
+          if (pgData && Array.isArray(pgData.users)) {
             pgData.users.forEach((u: any) => {
               if (!u.passwordHash && u.password) u.passwordHash = u.password;
             });
-            this.data = { ...this.data, ...pgData };
-            console.log(`[POSTGRES] Loaded persistent data: ${this.data.users.length} users, ${this.data.accounts.length} accounts, ${this.data.transactions.length} transactions.`);
+            this.data = {
+              isInitialized: false,
+              users: [],
+              accounts: [],
+              cards: [],
+              transactions: [],
+              notifications: [],
+              conversations: [],
+              messages: [],
+              auditLogs: [],
+              otps: [],
+              beneficiaries: [],
+              transferCodes: [],
+              ownerResetTokens: [],
+              ...pgData
+            };
+            console.log(`[POSTGRES] Loaded persistent data: ${this.data.users.length} users, ${(this.data.accounts || []).length} accounts, ${(this.data.transactions || []).length} transactions.`);
             saveDB(this.data);
             return;
           }

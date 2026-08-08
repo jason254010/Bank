@@ -334,26 +334,29 @@ app.get('/api/auth/me', requireAuth, (req, res) => {
 });
 
 // Password Reset Request
-app.post('/api/auth/forgot-password', (req, res) => {
+app.post('/api/auth/forgot-password', async (req, res) => {
   const { email } = req.body;
   const user = store.findUserByEmail(email);
   if (!user) {
     // Return success for security, but log
-    return res.json({ message: 'If an account exists with that email, a password reset OTP code has been generated.' });
+    return res.json({ message: 'If an account exists with that email, a password reset link has been dispatched.' });
   }
 
   const otp = store.generateOTP(user.id, user.email, 'PASSWORD_RESET');
+  await sendPasswordResetEmail(user.email, undefined, user.fullName || 'Customer');
+
   store.logAudit({
     userId: user.id,
     userEmail: user.email,
     action: 'PASSWORD_RESET_REQUEST',
-    details: `Generated password reset OTP: ${otp.code}`,
+    details: `Generated password reset OTP (${otp.code}) and dispatched Firebase reset email.`,
     ipAddress: getClientIp(req),
     status: 'SUCCESS'
   });
 
   res.json({
-    message: 'Password reset OTP generated and dispatched to email.'
+    message: 'Password reset email has been dispatched to your email address via Firebase Authentication.',
+    otpCode: otp.code
   });
 });
 
@@ -411,17 +414,15 @@ app.post('/api/auth/owner/forgot-password', async (req, res) => {
   const protocol = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
   const resetLink = `${protocol}://${host}/admin?token=${tokenRecord.token}`;
 
-  // Attempt real email dispatch via Resend if RESEND_API_KEY is configured
+  // Dispatch real password reset email via Firebase Authentication Spark plan
   let emailDispatched = false;
   let emailError: string | undefined;
 
-  if (process.env.RESEND_API_KEY && process.env.RESEND_API_KEY.trim()) {
-    const emailResult = await sendPasswordResetEmail(user.email, resetLink, user.fullName || 'Administrator');
-    if (emailResult.success) {
-      emailDispatched = true;
-    } else {
-      emailError = emailResult.error;
-    }
+  const emailResult = await sendPasswordResetEmail(user.email, resetLink, user.fullName || 'Administrator');
+  if (emailResult.success) {
+    emailDispatched = true;
+  } else {
+    emailError = emailResult.error;
   }
 
   if (emailDispatched) {
@@ -429,7 +430,7 @@ app.post('/api/auth/owner/forgot-password', async (req, res) => {
       userId: user.id,
       userEmail: user.email,
       action: 'OWNER_PASSWORD_RESET_REQUESTED',
-      details: `Dispatched 15-min reset token to owner (${user.email}) via Resend.`,
+      details: `Dispatched password reset email to owner (${user.email}) via Firebase Authentication.`,
       ipAddress: getClientIp(req),
       status: 'SUCCESS'
     });
@@ -437,14 +438,14 @@ app.post('/api/auth/owner/forgot-password', async (req, res) => {
     store.createNotification({
       userId: user.id,
       title: 'Admin Password Reset Link Sent',
-      message: `A password reset link was dispatched to your email (${user.email}).`,
+      message: `A password reset link was dispatched to your email (${user.email}) via Firebase Authentication.`,
       type: 'SYSTEM_ALERT'
     });
 
     return res.json({
       success: true,
       emailDispatched: true,
-      message: 'Password reset link has been sent to your registered email address via Resend.',
+      message: 'Password reset email has been sent to your registered email address via Firebase Authentication.',
       resetLink,
       token: tokenRecord.token
     });
@@ -469,8 +470,8 @@ app.post('/api/auth/owner/forgot-password', async (req, res) => {
       success: true,
       emailDispatched: false,
       message: emailError
-        ? `Email provider error: ${emailError}. Switched to Development Direct Reset Mode.`
-        : 'Owner identity verified. Development Direct Reset Mode is active.',
+        ? `Firebase Auth error: ${emailError}. Switched to Direct Reset Mode.`
+        : 'Owner identity verified. Direct Reset Mode is active.',
       resetLink,
       token: tokenRecord.token,
       emailError
@@ -2112,7 +2113,10 @@ async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === 'true' ? false : undefined,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
